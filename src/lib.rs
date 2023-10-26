@@ -16,6 +16,8 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub trait Encode {
+    fn size(&self) -> u64;
+
     fn encode(&self, output: &mut impl Write) -> Result<()>;
 }
 
@@ -23,11 +25,100 @@ pub trait Decode: Sized {
     fn decode(input: &mut &[u8]) -> Result<Self>;
 }
 
+impl Encode for u16 {
+    fn size(&self) -> u64 {
+        2
+    }
+
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        output.write_u16::<BigEndian>(*self)?;
+        Ok(())
+    }
+}
+
+impl Decode for u16 {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        Ok(input.read_u16::<BigEndian>()?)
+    }
+}
+
+
+impl Encode for u32 {
+    fn size(&self) -> u64 {
+        4
+    }
+
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        output.write_u32::<BigEndian>(*self)?;
+        Ok(())
+    }
+}
+
+impl Decode for u32 {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        Ok(input.read_u32::<BigEndian>()?)
+    }
+}
+
+impl Encode for u64 {
+    fn size(&self) -> u64 {
+        8
+    }
+
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        output.write_u64::<BigEndian>(*self)?;
+        Ok(())
+    }
+}
+
+impl Decode for u64 {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        Ok(input.read_u64::<BigEndian>()?)
+    }
+}
+
+impl Encode for U8F8 {
+    fn size(&self) -> u64 {
+        2
+    }
+
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        output.write_u16::<BigEndian>(self.to_bits())?;
+        Ok(())
+    }
+}
+
+impl Decode for U8F8 {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        Ok(Self::from_bits(input.read_u16::<BigEndian>()?))
+    }
+}
+
+impl Encode for U16F16 {
+    fn size(&self) -> u64 {
+        4
+    }
+
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        output.write_u32::<BigEndian>(self.to_bits())?;
+        Ok(())
+    }
+}
+
+impl Decode for U16F16 {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        Ok(Self::from_bits(input.read_u32::<BigEndian>()?))
+    }
+}
+
 impl Encode for String {
+    fn size(&self) -> u64 {
+        self.as_bytes().len() as u64 + 1
+    }
+
     fn encode(&self, output: &mut impl Write) -> Result<()> {
         output.write_all(self.as_bytes())?;
         output.write_u8(0)?;
-
         Ok(())
     }
 }
@@ -68,6 +159,10 @@ pub struct File {
 }
 
 impl Encode for File {
+    fn size(&self) -> u64 {
+        self.file_type.size() + self.movie.size()
+    }
+
     fn encode(&self, output: &mut impl Write) -> Result<()> {
         self.file_type.encode(output)?;
         self.movie.encode(output)?;
@@ -81,10 +176,10 @@ impl Decode for File {
         let mut movie = None;
 
         while !input.is_empty() {
-            let size = input.read_u32::<BigEndian>()?;
-            let r#type: [u8; 4] = input.read_u32::<BigEndian>()?.to_be_bytes();
+            let size = u32::decode(input)?;
+            let r#type: [u8; 4] = u32::decode(input)?.to_be_bytes();
 
-            let (mut data, remaining_data) = input.split_at((size - 8) as usize);
+            let (mut data, remaining_data) = input.split_at((size - 4 - 4) as usize);
             match &r#type {
                 b"ftyp" => {
                     assert!(file_type.is_none());
@@ -103,6 +198,7 @@ impl Decode for File {
                 b"meta" => {}
                 _ => {}
             }
+            println!("{} {}", std::str::from_utf8(&r#type).unwrap(), data.len());
             *input = remaining_data;
         }
 
@@ -122,14 +218,18 @@ pub struct FileType {
 }
 
 impl Encode for FileType {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"ftyp"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + 4 + 4 + self.compatible_brands.len() as u64 * 4
+    }
 
-        output.write_u32::<BigEndian>(self.major_brand.0)?;
-        output.write_u32::<BigEndian>(self.minor_version)?;
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"ftyp").encode(output)?; // type
+
+        self.major_brand.0.encode(output)?;
+        self.minor_version.encode(output)?;
         for compatible_brand in &self.compatible_brands {
-            output.write_u32::<BigEndian>(compatible_brand.0)?;
+            compatible_brand.0.encode(output)?;
         }
 
         Ok(())
@@ -139,8 +239,8 @@ impl Encode for FileType {
 impl Decode for FileType {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         Ok(Self {
-            major_brand: FourCC(input.read_u32::<BigEndian>()?),
-            minor_version: input.read_u32::<BigEndian>()?,
+            major_brand: FourCC(Decode::decode(input)?),
+            minor_version: Decode::decode(input)?,
             compatible_brands: input
                 .chunks(4)
                 .map(|chunk| FourCC(u32::from_be_bytes(chunk.try_into().unwrap())))
@@ -157,9 +257,13 @@ pub struct Movie {
 }
 
 impl Encode for Movie {
+    fn size(&self) -> u64 {
+        4 + 4 + self.header.size() + self.tracks.iter().map(Encode::size).sum::<u64>()
+    }
+
     fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"moov"))?; // type
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"moov").encode(output)?; // type
 
         self.header.encode(output)?;
         for track in &self.tracks {
@@ -176,10 +280,10 @@ impl Decode for Movie {
         let mut tracks = vec![];
 
         while !input.is_empty() {
-            let size = input.read_u32::<BigEndian>()?;
-            let r#type: [u8; 4] = input.read_u32::<BigEndian>()?.to_be_bytes();
+            let size = u32::decode(input)?;
+            let r#type: [u8; 4] = u32::decode(input)?.to_be_bytes();
 
-            let (mut data, remaining_data) = input.split_at((size - 8) as usize);
+            let (mut data, remaining_data) = input.split_at((size - 4 - 4) as usize);
             match &r#type {
                 b"mvhd" => {
                     assert!(header.is_none());
@@ -190,6 +294,7 @@ impl Decode for Movie {
                 b"ipmc" => {}
                 _ => {}
             }
+            println!("{} {}", std::str::from_utf8(&r#type).unwrap(), data.len());
             *input = remaining_data;
         }
 
@@ -197,6 +302,35 @@ impl Decode for Movie {
         Ok(Self {
             header: header.unwrap(),
             tracks,
+        })
+    }
+}
+
+// 8.2
+#[derive(Debug)]
+pub struct MediaData {
+    pub data: Vec<u8>
+}
+
+impl Encode for MediaData {
+    fn size(&self) -> u64 {
+        self.data.len() as u64
+    }
+
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"mdat").encode(output)?; // type
+
+        output.write(&self.data)?;
+
+        Ok(())
+    }
+}
+
+impl Decode for MediaData {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        Ok(Self {
+            data: input.to_owned()
         })
     }
 }
@@ -215,31 +349,35 @@ pub struct MovieHeader {
 }
 
 impl Encode for MovieHeader {
+    fn size(&self) -> u64 {
+        4 + 4 + 1 + 3 + 8 + 8 + 4 + 8 + 4 + 2 + 2 + 2 * 4 + 9 * 4 + 6 * 4 + 4
+    }
+
     fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"mvhd"))?; // type
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"mvhd").encode(output)?; // type
         output.write_u8(1)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
-        output.write_u64::<BigEndian>(self.creation_time)?;
-        output.write_u64::<BigEndian>(self.modification_time)?;
-        output.write_u32::<BigEndian>(self.timescale)?;
-        output.write_u64::<BigEndian>(self.duration)?;
-        output.write_u32::<BigEndian>(self.rate.to_bits())?;
-        output.write_u16::<BigEndian>(self.volume.to_bits())?;
-        output.write_u16::<BigEndian>(0)?; // reserved
-        output.write_u32::<BigEndian>(0)?; // reserved
-        output.write_u32::<BigEndian>(0)?; // reserved
+        self.creation_time.encode(output)?;
+        self.modification_time.encode(output)?;
+        self.timescale.encode(output)?;
+        self.duration.encode(output)?;
+        self.rate.encode(output)?;
+        self.volume.encode(output)?;
+        0u16.encode(output)?; // reserved
+        0u32.encode(output)?; // reserved
+        0u32.encode(output)?; // reserved
         for value in self.matrix {
-            output.write_u32::<BigEndian>(value)?;
+            value.encode(output)?;
         }
-        output.write_u32::<BigEndian>(0)?; // reserved
-        output.write_u32::<BigEndian>(0)?; // reserved
-        output.write_u32::<BigEndian>(0)?; // reserved
-        output.write_u32::<BigEndian>(0)?; // reserved
-        output.write_u32::<BigEndian>(0)?; // reserved
-        output.write_u32::<BigEndian>(0)?; // reserved
-        output.write_u32::<BigEndian>(self.next_track_id)?;
+        0u32.encode(output)?; // reserved
+        0u32.encode(output)?; // reserved
+        0u32.encode(output)?; // reserved
+        0u32.encode(output)?; // reserved
+        0u32.encode(output)?; // reserved
+        0u32.encode(output)?; // reserved
+        self.next_track_id.encode(output)?;
 
         Ok(())
     }
@@ -256,41 +394,41 @@ impl Decode for MovieHeader {
         let duration;
         match version {
             0 => {
-                creation_time = input.read_u32::<BigEndian>()? as u64;
-                modification_time = input.read_u32::<BigEndian>()? as u64;
-                timescale = input.read_u32::<BigEndian>()?;
-                duration = input.read_u32::<BigEndian>()? as u64;
+                creation_time = u32::decode(input)? as u64;
+                modification_time = u32::decode(input)? as u64;
+                timescale = Decode::decode(input)?;
+                duration = u32::decode(input)? as u64;
             }
             1 => {
-                creation_time = input.read_u64::<BigEndian>()?;
-                modification_time = input.read_u64::<BigEndian>()?;
-                timescale = input.read_u32::<BigEndian>()?;
-                duration = input.read_u64::<BigEndian>()?;
+                creation_time = Decode::decode(input)?;
+                modification_time = Decode::decode(input)?;
+                timescale = Decode::decode(input)?;
+                duration = Decode::decode(input)?;
             }
             _ => panic!(),
         }
-        let rate = U16F16::from_bits(input.read_u32::<BigEndian>()?);
-        let volume = U8F8::from_bits(input.read_u16::<BigEndian>()?);
-        assert_eq!(input.read_u16::<BigEndian>()?, 0); // reserved
-        assert_eq!(input.read_u32::<BigEndian>()?, 0); // reserved
-        assert_eq!(input.read_u32::<BigEndian>()?, 0); // reserved
+        let rate = Decode::decode(input)?;
+        let volume = Decode::decode(input)?;
+        assert_eq!(u16::decode(input)?, 0); // reserved
+        assert_eq!(u32::decode(input)?, 0); // reserved
+        assert_eq!(u32::decode(input)?, 0); // reserved
         let matrix = [
-            input.read_u32::<BigEndian>()?,
-            input.read_u32::<BigEndian>()?,
-            input.read_u32::<BigEndian>()?,
-            input.read_u32::<BigEndian>()?,
-            input.read_u32::<BigEndian>()?,
-            input.read_u32::<BigEndian>()?,
-            input.read_u32::<BigEndian>()?,
-            input.read_u32::<BigEndian>()?,
-            input.read_u32::<BigEndian>()?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
         ];
-        assert_eq!(input.read_u32::<BigEndian>()?, 0); // reserved
-        assert_eq!(input.read_u32::<BigEndian>()?, 0); // reserved
-        assert_eq!(input.read_u32::<BigEndian>()?, 0); // reserved
-        assert_eq!(input.read_u32::<BigEndian>()?, 0); // reserved
-        assert_eq!(input.read_u32::<BigEndian>()?, 0); // reserved
-        assert_eq!(input.read_u32::<BigEndian>()?, 0); // reserved
+        assert_eq!(u32::decode(input)?, 0); // reserved
+        assert_eq!(u32::decode(input)?, 0); // reserved
+        assert_eq!(u32::decode(input)?, 0); // reserved
+        assert_eq!(u32::decode(input)?, 0); // reserved
+        assert_eq!(u32::decode(input)?, 0); // reserved
+        assert_eq!(u32::decode(input)?, 0); // reserved
         let next_track_id = input.read_u32::<BigEndian>()?;
 
         Ok(Self {
@@ -314,11 +452,16 @@ pub struct Track {
 }
 
 impl Encode for Track {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"trak"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + self.header.size() + self.media.size()
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"trak").encode(output)?; // type
+
+        self.header.encode(output)?;
+        self.media.encode(output)
     }
 }
 
@@ -328,10 +471,10 @@ impl Decode for Track {
         let mut media = None;
 
         while !input.is_empty() {
-            let size = input.read_u32::<BigEndian>()?;
-            let r#type: [u8; 4] = input.read_u32::<BigEndian>()?.to_be_bytes();
+            let size = u32::decode(input)?;
+            let r#type: [u8; 4] = u32::decode(input)?.to_be_bytes();
 
-            let (mut data, remaining_data) = input.split_at((size - 8) as usize);
+            let (mut data, remaining_data) = input.split_at((size - 4 - 4) as usize);
             match &r#type {
                 b"tkhd" => {
                     assert!(header.is_none());
@@ -345,6 +488,7 @@ impl Decode for Track {
                 }
                 _ => {}
             }
+            println!("{} {}", std::str::from_utf8(&r#type).unwrap(), data.len());
             *input = remaining_data;
         }
 
@@ -371,11 +515,33 @@ pub struct TrackHeader {
 }
 
 impl Encode for TrackHeader {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"tkhd"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + 1 + 3 + 8 + 8 + 4 + 4 + 8 + 4 + 4 + 2 + 2 + 2 + 2 + 9 * 4 + 4 + 4
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"tkhd").encode(output)?; // type
+        output.write_u8(1)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        self.creation_time.encode(output)?;
+        self.modification_time.encode(output)?;
+        self.track_id.encode(output)?;
+        0u32.encode(output)?;
+        self.duration.encode(output)?;
+        self.creation_time.encode(output)?;
+        0u32.encode(output)?;
+        0u32.encode(output)?;
+        self.layer.encode(output)?;
+        self.alternate_group.encode(output)?;
+        self.volume.encode(output)?;
+        0u16.encode(output)?;
+        for value in self.matrix {
+            value.encode(output)?;
+        }
+        self.width.encode(output)?;
+        self.height.encode(output)
     }
 }
 
@@ -390,40 +556,40 @@ impl Decode for TrackHeader {
         let duration;
         match version {
             0 => {
-                creation_time = input.read_u32::<BigEndian>()? as u64;
-                modification_time = input.read_u32::<BigEndian>()? as u64;
-                track_id = input.read_u32::<BigEndian>()?;
-                input.read_u32::<BigEndian>()?; // reserved
-                duration = input.read_u32::<BigEndian>()? as u64;
+                creation_time = u32::decode(input)? as u64;
+                modification_time = u32::decode(input)? as u64;
+                track_id = Decode::decode(input)?;
+                assert_eq!(u32::decode(input)?, 0); // reserved
+                duration = u32::decode(input)? as u64;
             }
             1 => {
-                creation_time = input.read_u64::<BigEndian>()?;
-                modification_time = input.read_u64::<BigEndian>()?;
-                track_id = input.read_u32::<BigEndian>()?;
-                input.read_u32::<BigEndian>()?; // reserved
-                duration = input.read_u64::<BigEndian>()?;
+                creation_time = Decode::decode(input)?;
+                modification_time = Decode::decode(input)?;
+                track_id = Decode::decode(input)?;
+                assert_eq!(u32::decode(input)?, 0); // reserved
+                duration = Decode::decode(input)?;
             }
             _ => panic!(),
         }
-        assert_eq!(input.read_u32::<BigEndian>()?, 0); // reserved
-        assert_eq!(input.read_u32::<BigEndian>()?, 0); // reserved
-        let layer = input.read_u16::<BigEndian>()?;
-        let alternate_group = input.read_u16::<BigEndian>()?;
-        let volume = U8F8::from_bits(input.read_u16::<BigEndian>()?);
-        assert_eq!(input.read_u16::<BigEndian>()?, 0); // reserved
+        assert_eq!(u32::decode(input)?, 0); // reserved
+        assert_eq!(u32::decode(input)?, 0); // reserved
+        let layer = Decode::decode(input)?;
+        let alternate_group = Decode::decode(input)?;
+        let volume = Decode::decode(input)?;
+        assert_eq!(u16::decode(input)?, 0); // reserved
         let matrix = [
-            input.read_u32::<BigEndian>()?,
-            input.read_u32::<BigEndian>()?,
-            input.read_u32::<BigEndian>()?,
-            input.read_u32::<BigEndian>()?,
-            input.read_u32::<BigEndian>()?,
-            input.read_u32::<BigEndian>()?,
-            input.read_u32::<BigEndian>()?,
-            input.read_u32::<BigEndian>()?,
-            input.read_u32::<BigEndian>()?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
         ];
-        let width = U16F16::from_bits(input.read_u32::<BigEndian>()?);
-        let height = U16F16::from_bits(input.read_u32::<BigEndian>()?);
+        let width = Decode::decode(input)?;
+        let height = Decode::decode(input)?;
 
         Ok(Self {
             creation_time,
@@ -449,11 +615,17 @@ pub struct Media {
 }
 
 impl Encode for Media {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"mdia"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + self.header.size() + self.handler.size() + self.information.size()
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"mdia").encode(output)?; // type
+
+        self.header.encode(output)?;
+        self.handler.encode(output)?;
+        self.information.encode(output)
     }
 }
 
@@ -483,6 +655,7 @@ impl Decode for Media {
                 }
                 _ => {}
             }
+            println!("{} {}", std::str::from_utf8(&r#type).unwrap(), data.len());
             *input = remaining_data;
         }
 
@@ -505,11 +678,22 @@ pub struct MediaHeader {
 }
 
 impl Encode for MediaHeader {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"mdhd"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + 1 + 3 + 8 + 8 + 4 + 8 + 2 + 2
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"mdhd").encode(output)?; // type
+        output.write_u8(1)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        self.creation_time.encode(output)?;
+        self.modification_time.encode(output)?;
+        self.timescale.encode(output)?;
+        self.duration.encode(output)?;
+        self.language.0.encode(output)?;
+        0u16.encode(output)
     }
 }
 
@@ -558,11 +742,22 @@ pub struct Handler {
 }
 
 impl Encode for Handler {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"hdlr"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + 1 + 3 + 4 + 4 + 4 + 4 + 4 + self.name.size()
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"hdlr").encode(output)?; // type
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        0u32.encode(output)?;
+        self.r#type.0.encode(output)?;
+        0u32.encode(output)?;
+        0u32.encode(output)?;
+        0u32.encode(output)?;
+        self.name.encode(output)
     }
 }
 
@@ -591,11 +786,23 @@ pub struct MediaInformation {
 }
 
 impl Encode for MediaInformation {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"minf"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + match &self.header {
+            MediaInformationHeader::Video(header) => header.size(),
+            MediaInformationHeader::Sound(header) => header.size(),
+        } + self.data_information.size() + self.sample_table.size()
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"minf").encode(output)?; // type
+
+        match &self.header {
+            MediaInformationHeader::Video(header) => header.encode(output),
+            MediaInformationHeader::Sound(header) => header.encode(output)
+        }?;
+        self.data_information.encode(output)?;
+        self.sample_table.encode(output)
     }
 }
 
@@ -635,6 +842,7 @@ impl Decode for MediaInformation {
                 }
                 _ => {}
             }
+            println!("{} {}", std::str::from_utf8(&r#type).unwrap(), data.len());
             *input = remaining_data;
         }
 
@@ -661,11 +869,21 @@ pub struct VideoMediaHeader {
 }
 
 impl Encode for VideoMediaHeader {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"vmhd"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + 1 + 3 + 2 + 3 * 2
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"vmhd").encode(output)?; // type
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        self.graphicsmode.encode(output)?;
+        for value in self.opcolor {
+            value.encode(output)?;
+        }
+        Ok(())
     }
 }
 
@@ -674,16 +892,13 @@ impl Decode for VideoMediaHeader {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
 
-        let graphicsmode = input.read_u16::<BigEndian>()?;
-        let opcolor = [
-            input.read_u16::<BigEndian>()?,
-            input.read_u16::<BigEndian>()?,
-            input.read_u16::<BigEndian>()?,
-        ];
-
         Ok(Self {
-            graphicsmode,
-            opcolor,
+            graphicsmode: Decode::decode(input)?,
+            opcolor: [
+                Decode::decode(input)?,
+                Decode::decode(input)?,
+                Decode::decode(input)?,
+            ],
         })
     }
 }
@@ -695,11 +910,18 @@ pub struct SoundMediaHeader {
 }
 
 impl Encode for SoundMediaHeader {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"smhd"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + 1 + 3 + 2 + 2
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"smhd").encode(output)?; // type
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        self.balance.encode(output)?;
+        0u16.encode(output)
     }
 }
 
@@ -722,11 +944,15 @@ pub struct DataInformation {
 }
 
 impl Encode for DataInformation {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"dinf"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + self.reference.size()
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"dinf").encode(output)?; // type
+
+        self.reference.encode(output)
     }
 }
 
@@ -746,6 +972,7 @@ impl Decode for DataInformation {
                 }
                 _ => {}
             }
+            println!("{} {}", std::str::from_utf8(&r#type).unwrap(), data.len());
             *input = remaining_data;
         }
 
@@ -768,11 +995,17 @@ pub struct DataEntryUrl {
 }
 
 impl Encode for DataEntryUrl {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"url "))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + 1 + 3 + self.location.size()
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"url ").encode(output)?; // type
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        self.location.encode(output)
     }
 }
 
@@ -794,11 +1027,18 @@ pub struct DataEntryUrn {
 }
 
 impl Encode for DataEntryUrn {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"urn "))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + 1 + 3 + self.name.size() + self.location.size()
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"urn ").encode(output)?; // type
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        self.name.encode(output)?;
+        self.location.encode(output)
     }
 }
 
@@ -820,11 +1060,25 @@ pub struct DataReference {
 }
 
 impl Encode for DataReference {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"dref"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + self.entries.iter().map(|entry| match entry {
+            DataEntry::Url(entry) => entry.size(),
+            DataEntry::Urn(entry) => entry.size(),
+        }).sum::<u64>()
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"dref").encode(output)?; // type
+
+        (self.entries.len() as u32).encode(output)?;
+        for entry in &self.entries {
+            match entry {
+                DataEntry::Url(entry) => entry.encode(output),
+                DataEntry::Urn(entry) => entry.encode(output),
+            }?;
+        }
+        Ok(())
     }
 }
 
@@ -845,6 +1099,7 @@ impl Decode for DataReference {
                 b"urn " => entries.push(DataEntry::Urn(Decode::decode(&mut data)?)),
                 _ => {}
             }
+            println!("{} {}", std::str::from_utf8(&r#type).unwrap(), data.len());
             *input = remaining_data;
         }
 
@@ -865,11 +1120,26 @@ pub struct SampleTable {
 }
 
 impl Encode for SampleTable {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"stbl"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + self.description.size() + self.time_to_sample.size() + self.sample_to_chunk.size() + self.sample_size.size() + self.chunk_offset.size() + self.sync_sample.as_ref().map_or(0, Encode::size) + self.sample_to_group.as_ref().map_or(0, Encode::size)
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"stbl").encode(output)?; // type
+
+        self.description.encode(output)?;
+        self.time_to_sample.encode(output)?;
+        self.sample_to_chunk.encode(output)?;
+        self.sample_size.encode(output)?;
+        self.chunk_offset.encode(output)?;
+        if let Some(sync_sample) = &self.sync_sample {
+            sync_sample.encode(output)?;
+        }
+        if let Some(sample_to_group) = &self.sample_to_group {
+            sample_to_group.encode(output)?;
+        }
+        Ok(())
     }
 }
 
@@ -928,6 +1198,7 @@ impl Decode for SampleTable {
                 b"subs" => {}
                 _ => {}
             }
+            println!("{} {}", std::str::from_utf8(&r#type).unwrap(), data.len());
             *input = remaining_data;
         }
 
@@ -950,11 +1221,22 @@ pub struct TimeToSample {
 }
 
 impl Encode for TimeToSample {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"stts"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + 1 + 3 + 4 + self.entries.len() as u64 * (4 + 4)
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"stts").encode(output)?; // type
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        (self.entries.len() as u32).encode(output)?;
+        for entry in &self.entries {
+            entry.0.encode(output)?;
+            entry.1.encode(output)?;
+        }
+        Ok(())
     }
 }
 
@@ -980,11 +1262,17 @@ impl Decode for TimeToSample {
 pub struct SampleDescription {}
 
 impl Encode for SampleDescription {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"stsd"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + 1 + 3
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"stsd").encode(output)?; // type
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        Ok(())
     }
 }
 
@@ -1004,7 +1292,6 @@ impl Decode for SampleDescription {
             }
             *input = remaining_data;
         }
-
         Ok(Self {})
     }
 }
@@ -1017,11 +1304,33 @@ pub enum SampleSize {
 }
 
 impl Encode for SampleSize {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"stsz"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + 1 + 3 + 4 + 4 + match self {
+            SampleSize::Global(_) => 0,
+            SampleSize::Unique(samples) => samples.len() as u64 * 4
+        }
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"stsz").encode(output)?; // type
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        match self {
+            SampleSize::Global(sample_size) => {
+                sample_size.encode(output)?;
+                0u32.encode(output)?;
+            }
+            SampleSize::Unique(samples) => {
+                0u32.encode(output)?;
+                (samples.len() as u32).encode(output)?;
+                for sample in samples {
+                    sample.encode(output)?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1053,11 +1362,23 @@ pub struct SampleToChunk {
 }
 
 impl Encode for SampleToChunk {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"stsc"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + 1 + 3 + 4 + self.entries.len() as u64 * (4 + 4 + 4)
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"stsc").encode(output)?; // type
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        (self.entries.len() as u32).encode(output)?;
+        for entry in &self.entries {
+            entry.0.encode(output)?;
+            entry.1.encode(output)?;
+            entry.2.encode(output)?;
+        }
+        Ok(())
     }
 }
 
@@ -1066,15 +1387,14 @@ impl Decode for SampleToChunk {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
 
-        let entry_count = input.read_u32::<BigEndian>()?;
+        let entry_count = u32::decode(input)?;
         let mut entries = Vec::default();
         for _ in 0..entry_count {
-            let first_chunk = input.read_u32::<BigEndian>()?;
-            let samples_per_chunk = input.read_u32::<BigEndian>()?;
-            let sample_description_index = input.read_u32::<BigEndian>()?;
+            let first_chunk = u32::decode(input)?;
+            let samples_per_chunk = u32::decode(input)?;
+            let sample_description_index = u32::decode(input)?;
             //entries.push((first_chunk, samples_per_chunk, sample_description_index))
         }
-
         Ok(Self { entries })
     }
 }
@@ -1086,11 +1406,21 @@ pub struct ChunkOffset {
 }
 
 impl Encode for ChunkOffset {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"stco"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + 1 + 3 + 4 + self.entries.len() as u64 * 4
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"stco").encode(output)?; // type
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        (self.entries.len() as u32).encode(output)?;
+        for entry in &self.entries {
+            entry.encode(output)?;
+        }
+        Ok(())
     }
 }
 
@@ -1099,10 +1429,10 @@ impl Decode for ChunkOffset {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
 
-        let entry_count = input.read_u32::<BigEndian>()?;
+        let entry_count = u32::decode(input)?;
         let mut entries = Vec::default();
         for _ in 0..entry_count {
-            let chunk_offset = input.read_u32::<BigEndian>()?;
+            let chunk_offset = u32::decode(input)?;
             //entries.push(chunk_offset)
         }
 
@@ -1117,11 +1447,21 @@ pub struct SyncSample {
 }
 
 impl Encode for SyncSample {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"stss"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + 1 + 3 + 4 + self.entries.len() as u64 * 4
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"stss").encode(output)?; // type
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        (self.entries.len() as u32).encode(output)?;
+        for entry in &self.entries {
+            entry.encode(output)?;
+        }
+        Ok(())
     }
 }
 
@@ -1130,13 +1470,12 @@ impl Decode for SyncSample {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
 
-        let entry_count = input.read_u32::<BigEndian>()?;
+        let entry_count = u32::decode(input)?;
         let mut entries = Vec::default();
         for _ in 0..entry_count {
-            let sample_number = input.read_u32::<BigEndian>()?;
+            let sample_number = Decode::decode(input)?;
             entries.push(sample_number)
         }
-
         Ok(Self { entries })
     }
 }
@@ -1149,11 +1488,23 @@ pub struct SampleToGroup {
 }
 
 impl Encode for SampleToGroup {
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(0)?; // size
-        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"sbgp"))?; // type
+    fn size(&self) -> u64 {
+        4 + 4 + 1 + 3 + 4 + 4 + self.entries.len() as u64 * (4 + 4)
+    }
 
-        todo!()
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        0u32.encode(output)?; // size
+        u32::from_be_bytes(*b"sbgp").encode(output)?; // type
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        self.grouping_type.0.encode(output)?;
+        (self.entries.len() as u32).encode(output)?;
+        for entry in &self.entries {
+            entry.0.encode(output)?;
+            entry.1.encode(output)?;
+        }
+        Ok(())
     }
 }
 
@@ -1162,15 +1513,14 @@ impl Decode for SampleToGroup {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
 
-        let grouping_type = FourCC(input.read_u32::<BigEndian>()?);
-        let entry_count = input.read_u32::<BigEndian>()?;
+        let grouping_type = FourCC(Decode::decode(input)?);
+        let entry_count = u32::decode(input)?;
         let mut entries = Vec::default();
         for _ in 0..entry_count {
-            let sample_count = input.read_u32::<BigEndian>()?;
-            let group_description_index = input.read_u32::<BigEndian>()?;
+            let sample_count = Decode::decode(input)?;
+            let group_description_index = Decode::decode(input)?;
             entries.push((sample_count, group_description_index))
         }
-
         Ok(Self {
             grouping_type,
             entries,
