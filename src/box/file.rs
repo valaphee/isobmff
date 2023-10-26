@@ -1,20 +1,28 @@
 use std::io::Write;
+
 use derivative::Derivative;
-use crate::r#box::{Decode, Encode, FourCC, Result};
-use crate::r#box::movie::{MediaData, Movie};
+
+use crate::r#box::{
+    movie::{MediaData, Movie},
+    Decode, Encode, FourCC, Result,
+};
 
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct File {
     pub file_type: FileType,
     pub movie: Movie,
-    #[derivative(Debug="ignore")]
+    #[derivative(Debug = "ignore")]
     pub media_data: Vec<MediaData>,
 }
 
 impl Encode for File {
     fn size(&self) -> u64 {
-        self.file_type.size() + self.movie.size() + self.media_data.iter().map(Encode::size).sum::<u64>() + 4 + 4
+        self.file_type.size()
+            + self.movie.size()
+            + self.media_data.iter().map(Encode::size).sum::<u64>()
+            + 4
+            + 4
     }
 
     fn encode(&self, output: &mut impl Write) -> Result<()> {

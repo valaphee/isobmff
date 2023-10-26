@@ -1,14 +1,17 @@
-pub mod file;
-pub mod movie;
-pub mod track;
-pub mod media;
-pub mod sample_table;
+use std::{
+    fmt::{Debug, Formatter},
+    io::Write,
+};
 
-use std::fmt::{Debug, Formatter};
-use std::io::Write;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use fixed::types::{U16F16, U8F8};
 use thiserror::Error;
+
+pub mod file;
+pub mod media;
+pub mod movie;
+pub mod sample_table;
+pub mod track;
 
 #[derive(Error, Debug)]
 pub enum Error {

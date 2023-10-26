@@ -1,8 +1,9 @@
 use std::io::Write;
+
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use fixed::types::{U16F16, U8F8};
-use crate::r#box::{Decode, Encode, Result};
-use crate::r#box::media::Media;
+
+use crate::r#box::{media::Media, Decode, Encode, Result};
 
 // 8.4
 #[derive(Debug)]
@@ -176,7 +177,7 @@ impl Decode for TrackHeader {
 // 8.26
 #[derive(Debug)]
 pub struct Edit {
-    edit_list: Option<EditList>
+    edit_list: Option<EditList>,
 }
 
 impl Encode for Edit {
@@ -210,9 +211,7 @@ impl Decode for Edit {
             }
             *input = remaining_data;
         }
-        Ok(Self {
-            edit_list
-        })
+        Ok(Self { edit_list })
     }
 }
 
@@ -258,8 +257,6 @@ impl Decode for EditList {
             entries.push((segment_duration, media_time, media_rate))
         }
 
-        Ok(Self {
-            entries,
-        })
+        Ok(Self { entries })
     }
 }

@@ -1,8 +1,9 @@
 use std::io::Write;
+
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use fixed::types::U8F8;
-use crate::r#box::{Decode, Encode, FourCC, Language, Result};
-use crate::r#box::sample_table::SampleTable;
+
+use crate::r#box::{sample_table::SampleTable, Decode, Encode, FourCC, Language, Result};
 
 // 8.7
 #[derive(Debug)]
@@ -184,10 +185,13 @@ pub struct MediaInformation {
 
 impl Encode for MediaInformation {
     fn size(&self) -> u64 {
-        4 + 4 + match &self.header {
-            MediaInformationHeader::Video(header) => header.size(),
-            MediaInformationHeader::Sound(header) => header.size(),
-        } + self.data_information.size() + self.sample_table.size()
+        4 + 4
+            + match &self.header {
+                MediaInformationHeader::Video(header) => header.size(),
+                MediaInformationHeader::Sound(header) => header.size(),
+            }
+            + self.data_information.size()
+            + self.sample_table.size()
     }
 
     fn encode(&self, output: &mut impl Write) -> Result<()> {
@@ -196,7 +200,7 @@ impl Encode for MediaInformation {
 
         match &self.header {
             MediaInformationHeader::Video(header) => header.encode(output),
-            MediaInformationHeader::Sound(header) => header.encode(output)
+            MediaInformationHeader::Sound(header) => header.encode(output),
         }?;
         self.data_information.encode(output)?;
         self.sample_table.encode(output)
@@ -456,10 +460,18 @@ pub struct DataReference {
 
 impl Encode for DataReference {
     fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + 4 + self.entries.iter().map(|entry| match entry {
-            DataEntry::Url(entry) => entry.size(),
-            DataEntry::Urn(entry) => entry.size(),
-        }).sum::<u64>()
+        4 + 4
+            + 1
+            + 3
+            + 4
+            + self
+                .entries
+                .iter()
+                .map(|entry| match entry {
+                    DataEntry::Url(entry) => entry.size(),
+                    DataEntry::Urn(entry) => entry.size(),
+                })
+                .sum::<u64>()
     }
 
     fn encode(&self, output: &mut impl Write) -> Result<()> {

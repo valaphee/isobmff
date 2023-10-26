@@ -1,8 +1,9 @@
 use std::io::Write;
+
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use fixed::types::{U16F16, U8F8};
-use crate::r#box::{Decode, Encode, Result};
-use crate::r#box::track::Track;
+
+use crate::r#box::{track::Track, Decode, Encode, Result};
 
 // 8.1
 #[derive(Debug)]
@@ -62,7 +63,7 @@ impl Decode for Movie {
 // 8.2
 #[derive(Debug)]
 pub struct MediaData {
-    pub data: Vec<u8>
+    pub data: Vec<u8>,
 }
 
 impl Encode for MediaData {
@@ -84,9 +85,7 @@ impl Decode for MediaData {
         let data = input.to_owned();
         *input = &input[input.len()..];
 
-        Ok(Self {
-            data
-        })
+        Ok(Self { data })
     }
 }
 

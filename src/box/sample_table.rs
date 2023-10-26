@@ -1,8 +1,12 @@
-use std::hash::Hasher;
-use std::io::{Read, Write};
+use std::{
+    hash::Hasher,
+    io::{Read, Write},
+};
+
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use derivative::Derivative;
 use fixed::types::U16F16;
+
 use crate::r#box::{Decode, Encode, FourCC, Result};
 
 // 8.14
@@ -11,11 +15,11 @@ use crate::r#box::{Decode, Encode, FourCC, Result};
 pub struct SampleTable {
     pub description: SampleDescription,
     pub time_to_sample: TimeToSample,
-    #[derivative(Debug="ignore")]
+    #[derivative(Debug = "ignore")]
     pub sample_to_chunk: SampleToChunk,
-    #[derivative(Debug="ignore")]
+    #[derivative(Debug = "ignore")]
     pub sample_size: SampleSize,
-    #[derivative(Debug="ignore")]
+    #[derivative(Debug = "ignore")]
     pub chunk_offset: ChunkOffset,
     pub sync_sample: Option<SyncSample>,
     pub sample_to_group: Option<SampleToGroup>,
@@ -23,7 +27,14 @@ pub struct SampleTable {
 
 impl Encode for SampleTable {
     fn size(&self) -> u64 {
-        4 + 4 + self.description.size() + self.time_to_sample.size() + self.sample_to_chunk.size() + self.sample_size.size() + self.chunk_offset.size() + self.sync_sample.as_ref().map_or(0, Encode::size) + self.sample_to_group.as_ref().map_or(0, Encode::size)
+        4 + 4
+            + self.description.size()
+            + self.time_to_sample.size()
+            + self.sample_to_chunk.size()
+            + self.sample_size.size()
+            + self.chunk_offset.size()
+            + self.sync_sample.as_ref().map_or(0, Encode::size)
+            + self.sample_to_group.as_ref().map_or(0, Encode::size)
     }
 
     fn encode(&self, output: &mut impl Write) -> Result<()> {
@@ -301,7 +312,7 @@ impl Decode for AudioSampleEntry {
             data_reference_index,
             channelcount,
             samplesize,
-            samplerate
+            samplerate,
         })
     }
 }
@@ -338,7 +349,6 @@ impl Decode for SampleDescription {
         let mut avc1 = None;
         let mut mp4a = None;
 
-
         let entry_count = input.read_u32::<BigEndian>()?;
         for _ in 0..entry_count {
             let size = input.read_u32::<BigEndian>()?;
@@ -353,10 +363,7 @@ impl Decode for SampleDescription {
             *input = remaining_data;
         }
 
-        Ok(Self {
-            avc1,
-            mp4a,
-        })
+        Ok(Self { avc1, mp4a })
     }
 }
 
@@ -369,10 +376,15 @@ pub enum SampleSize {
 
 impl Encode for SampleSize {
     fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + 4 + 4 + match self {
-            SampleSize::Global(_) => 0,
-            SampleSize::Unique(samples) => samples.len() as u64 * 4
-        }
+        4 + 4
+            + 1
+            + 3
+            + 4
+            + 4
+            + match self {
+                SampleSize::Global(_) => 0,
+                SampleSize::Unique(samples) => samples.len() as u64 * 4,
+            }
     }
 
     fn encode(&self, output: &mut impl Write) -> Result<()> {
