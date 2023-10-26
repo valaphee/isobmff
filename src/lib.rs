@@ -108,7 +108,7 @@ impl Decode for File {
 
         Ok(Self {
             file_type: file_type.unwrap(),
-            movie: movie.unwrap(),        
+            movie: movie.unwrap(),
         })
     }
 }
@@ -248,7 +248,7 @@ impl Encode for MovieHeader {
 impl Decode for MovieHeader {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let version = input.read_u8()?;
-        let _flags = input.read_u24::<BigEndian>()?;
+        input.read_u24::<BigEndian>()?; // flags
 
         let creation_time;
         let modification_time;
@@ -382,7 +382,7 @@ impl Encode for TrackHeader {
 impl Decode for TrackHeader {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let version = input.read_u8()?;
-        let _flags = input.read_u24::<BigEndian>()?;
+        input.read_u24::<BigEndian>()?; // flags
 
         let creation_time;
         let modification_time;
@@ -487,8 +487,8 @@ impl Decode for Media {
         }
 
         Ok(Self {
-            header: header.unwrap(),          
-            handler: handler.unwrap(),        
+            header: header.unwrap(),
+            handler: handler.unwrap(),
             information: information.unwrap(),
         })
     }
@@ -516,7 +516,7 @@ impl Encode for MediaHeader {
 impl Decode for MediaHeader {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let version = input.read_u8()?;
-        let _flags = input.read_u24::<BigEndian>()?;
+        input.read_u24::<BigEndian>()?; // flags
 
         let creation_time;
         let modification_time;
@@ -568,8 +568,8 @@ impl Encode for Handler {
 
 impl Decode for Handler {
     fn decode(input: &mut &[u8]) -> Result<Self> {
-        let _version = input.read_u8()?;
-        let _flags = input.read_u24::<BigEndian>()?;
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
 
         assert_eq!(input.read_u32::<BigEndian>()?, 0); // pre_defined
         let r#type = FourCC(input.read_u32::<BigEndian>()?);
@@ -671,8 +671,8 @@ impl Encode for VideoMediaHeader {
 
 impl Decode for VideoMediaHeader {
     fn decode(input: &mut &[u8]) -> Result<Self> {
-        let _version = input.read_u8()?;
-        let _flags = input.read_u24::<BigEndian>()?;
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
 
         let graphicsmode = input.read_u16::<BigEndian>()?;
         let opcolor = [
@@ -705,8 +705,8 @@ impl Encode for SoundMediaHeader {
 
 impl Decode for SoundMediaHeader {
     fn decode(input: &mut &[u8]) -> Result<Self> {
-        let _version = input.read_u8()?;
-        let _flags = input.read_u24::<BigEndian>()?;
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
 
         let balance = U8F8::from_bits(input.read_u16::<BigEndian>()?);
         assert_eq!(input.read_u16::<BigEndian>()?, 0); // reserved
@@ -778,8 +778,8 @@ impl Encode for DataEntryUrl {
 
 impl Decode for DataEntryUrl {
     fn decode(input: &mut &[u8]) -> Result<Self> {
-        let _version = input.read_u8()?;
-        let _flags = input.read_u24::<BigEndian>()?;
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
 
         Ok(Self {
             location: Decode::decode(input)?,
@@ -804,8 +804,8 @@ impl Encode for DataEntryUrn {
 
 impl Decode for DataEntryUrn {
     fn decode(input: &mut &[u8]) -> Result<Self> {
-        let _version = input.read_u8()?;
-        let _flags = input.read_u24::<BigEndian>()?;
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
 
         Ok(Self {
             name: Decode::decode(input)?,
@@ -830,8 +830,8 @@ impl Encode for DataReference {
 
 impl Decode for DataReference {
     fn decode(input: &mut &[u8]) -> Result<Self> {
-        let _version = input.read_u8()?;
-        let _flags = input.read_u24::<BigEndian>()?;
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
 
         let entry_count = input.read_u32::<BigEndian>()?;
         let mut entries = Vec::default();
@@ -858,7 +858,10 @@ pub struct SampleTable {
     pub description: SampleDescription,
     pub time_to_sample: TimeToSample,
     pub sample_to_chunk: SampleToChunk,
+    pub sample_size: SampleSize,
     pub chunk_offset: ChunkOffset,
+    pub sync_sample: Option<SyncSample>,
+    pub sample_to_group: Option<SampleToGroup>,
 }
 
 impl Encode for SampleTable {
@@ -875,7 +878,10 @@ impl Decode for SampleTable {
         let mut description = None;
         let mut time_to_sample = None;
         let mut sample_to_chunk = None;
+        let mut sample_size = None;
         let mut chunk_offset = None;
+        let mut sync_sample = None;
+        let mut sample_to_group = None;
 
         while !input.is_empty() {
             let size = input.read_u32::<BigEndian>()?;
@@ -896,19 +902,28 @@ impl Decode for SampleTable {
                     assert!(sample_to_chunk.is_none());
                     sample_to_chunk = Some(Decode::decode(&mut data)?)
                 }
-                b"stsz" => {}
+                b"stsz" => {
+                    assert!(sample_size.is_none());
+                    sample_size = Some(Decode::decode(&mut data)?)
+                }
                 b"stz2" => {}
                 b"stco" => {
                     assert!(chunk_offset.is_none());
                     chunk_offset = Some(Decode::decode(&mut data)?)
                 }
                 b"co64" => {}
-                b"stss" => {}
+                b"stss" => {
+                    assert!(sync_sample.is_none());
+                    sync_sample = Some(Decode::decode(&mut data)?)
+                }
                 b"stsh" => {}
                 b"padb" => {}
                 b"stdp" => {}
                 b"sdtp" => {}
-                b"sbgp" => {}
+                b"sbgp" => {
+                    assert!(sample_to_group.is_none());
+                    sample_to_group = Some(Decode::decode(&mut data)?)
+                }
                 b"sgpd" => {}
                 b"subs" => {}
                 _ => {}
@@ -920,7 +935,10 @@ impl Decode for SampleTable {
             description: description.unwrap(),
             time_to_sample: time_to_sample.unwrap(),
             sample_to_chunk: sample_to_chunk.unwrap(),
+            sample_size: sample_size.unwrap(),
             chunk_offset: chunk_offset.unwrap(),
+            sync_sample,
+            sample_to_group,
         })
     }
 }
@@ -942,8 +960,8 @@ impl Encode for TimeToSample {
 
 impl Decode for TimeToSample {
     fn decode(input: &mut &[u8]) -> Result<Self> {
-        let _version = input.read_u8()?;
-        let _flags = input.read_u24::<BigEndian>()?;
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
 
         let entry_count = input.read_u32::<BigEndian>()?;
         let mut entries = Vec::default();
@@ -972,8 +990,8 @@ impl Encode for SampleDescription {
 
 impl Decode for SampleDescription {
     fn decode(input: &mut &[u8]) -> Result<Self> {
-        let _version = input.read_u8()?;
-        let _flags = input.read_u24::<BigEndian>()?;
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
 
         let entry_count = input.read_u32::<BigEndian>()?;
         for _ in 0..entry_count {
@@ -988,6 +1006,43 @@ impl Decode for SampleDescription {
         }
 
         Ok(Self {})
+    }
+}
+
+// 8.17
+#[derive(Debug)]
+pub enum SampleSize {
+    Global(u32),
+    Unique(Vec<u32>),
+}
+
+impl Encode for SampleSize {
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        output.write_u32::<BigEndian>(0)?; // size
+        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"stsz"))?; // type
+
+        todo!()
+    }
+}
+
+impl Decode for SampleSize {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
+
+        let sample_size = input.read_u32::<BigEndian>()?;
+        let sample_count = input.read_u32::<BigEndian>()?;
+        if sample_size != 0 {
+            return Ok(SampleSize::Global(sample_size));
+        }
+
+        let mut samples = Vec::default();
+        for _ in 0..sample_count {
+            let entry_size = input.read_u32::<BigEndian>()?;
+            //samples.push(entry_size)
+        }
+
+        Ok(SampleSize::Unique(samples))
     }
 }
 
@@ -1008,8 +1063,8 @@ impl Encode for SampleToChunk {
 
 impl Decode for SampleToChunk {
     fn decode(input: &mut &[u8]) -> Result<Self> {
-        let _version = input.read_u8()?;
-        let _flags = input.read_u24::<BigEndian>()?;
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
 
         let entry_count = input.read_u32::<BigEndian>()?;
         let mut entries = Vec::default();
@@ -1041,8 +1096,8 @@ impl Encode for ChunkOffset {
 
 impl Decode for ChunkOffset {
     fn decode(input: &mut &[u8]) -> Result<Self> {
-        let _version = input.read_u8()?;
-        let _flags = input.read_u24::<BigEndian>()?;
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
 
         let entry_count = input.read_u32::<BigEndian>()?;
         let mut entries = Vec::default();
@@ -1052,5 +1107,73 @@ impl Decode for ChunkOffset {
         }
 
         Ok(Self { entries })
+    }
+}
+
+// 8.20
+#[derive(Debug)]
+pub struct SyncSample {
+    pub entries: Vec<u32>,
+}
+
+impl Encode for SyncSample {
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        output.write_u32::<BigEndian>(0)?; // size
+        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"stss"))?; // type
+
+        todo!()
+    }
+}
+
+impl Decode for SyncSample {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
+
+        let entry_count = input.read_u32::<BigEndian>()?;
+        let mut entries = Vec::default();
+        for _ in 0..entry_count {
+            let sample_number = input.read_u32::<BigEndian>()?;
+            entries.push(sample_number)
+        }
+
+        Ok(Self { entries })
+    }
+}
+
+// 8.40.3.2
+#[derive(Debug)]
+pub struct SampleToGroup {
+    pub grouping_type: FourCC,
+    pub entries: Vec<(u32, u32)>,
+}
+
+impl Encode for SampleToGroup {
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        output.write_u32::<BigEndian>(0)?; // size
+        output.write_u32::<BigEndian>(u32::from_be_bytes(*b"sbgp"))?; // type
+
+        todo!()
+    }
+}
+
+impl Decode for SampleToGroup {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
+
+        let grouping_type = FourCC(input.read_u32::<BigEndian>()?);
+        let entry_count = input.read_u32::<BigEndian>()?;
+        let mut entries = Vec::default();
+        for _ in 0..entry_count {
+            let sample_count = input.read_u32::<BigEndian>()?;
+            let group_description_index = input.read_u32::<BigEndian>()?;
+            entries.push((sample_count, group_description_index))
+        }
+
+        Ok(Self {
+            grouping_type,
+            entries,
+        })
     }
 }
