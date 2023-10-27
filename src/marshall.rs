@@ -2,6 +2,7 @@ use std::{
     fmt::{Debug, Formatter},
     io::{Read, Write},
 };
+use std::str::FromStr;
 
 use bstringify::bstringify;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -14,8 +15,8 @@ pub enum Error {
     #[error("IO error")]
     Io(#[from] std::io::Error),
 
-    #[error("Invalid {r#type} box quantity, current {quantity}, expected {expected}")]
-    BoxQuantity {
+    #[error("Invalid {r#type} box quantity: {quantity}, expected: {expected}")]
+    InvalidBoxQuantity {
         r#type: &'static str,
         quantity: usize,
         expected: usize,
@@ -171,6 +172,14 @@ impl Debug for FourCC {
     }
 }
 
+impl FromStr for FourCC {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(Self(s.as_bytes().try_into().unwrap()))
+    }
+}
+
 pub struct Language(u16);
 
 impl Debug for Language {
@@ -256,7 +265,7 @@ macro_rules! decode_boxes {(
 macro_rules! decode_box {
     ($input:ident optional $type:ident $name:ident) => {{
         if $name.is_some() {
-            return Err(Error::BoxQuantity {
+            return Err(Error::InvalidBoxQuantity {
                 r#type: stringify!($type),
                 quantity: 2,
                 expected: 1,
@@ -267,7 +276,7 @@ macro_rules! decode_box {
 
     ($input:ident required $type:ident $name:ident) => {{
         if $name.is_some() {
-            return Err(Error::BoxQuantity {
+            return Err(Error::InvalidBoxQuantity {
                 r#type: stringify!($type),
                 quantity: 2,
                 expected: 1,
@@ -285,7 +294,7 @@ macro_rules! unwrap_box {
     (optional $type:ident $name:ident) => {};
 
     (required $type:ident $name:ident) => {
-        let $name = $name.ok_or(Error::BoxQuantity {
+        let $name = $name.ok_or(Error::InvalidBoxQuantity {
             r#type: stringify!($type),
             quantity: 0,
             expected: 1,
@@ -801,21 +810,21 @@ impl Decode for MediaHeaderBox {
         let duration;
         match version {
             0 => {
-                creation_time = input.read_u32::<BigEndian>()? as u64;
-                modification_time = input.read_u32::<BigEndian>()? as u64;
-                timescale = input.read_u32::<BigEndian>()?;
-                duration = input.read_u32::<BigEndian>()? as u64;
+                creation_time = u32::decode(input)? as u64;
+                modification_time = u32::decode(input)? as u64;
+                timescale = Decode::decode(input)?;
+                duration = u32::decode(input)? as u64;
             }
             1 => {
-                creation_time = input.read_u64::<BigEndian>()?;
-                modification_time = input.read_u64::<BigEndian>()?;
-                timescale = input.read_u32::<BigEndian>()?;
-                duration = input.read_u64::<BigEndian>()?;
+                creation_time = Decode::decode(input)?;
+                modification_time = Decode::decode(input)?;
+                timescale = Decode::decode(input)?;
+                duration = Decode::decode(input)?;
             }
             _ => panic!(),
         }
-        let language = Language(input.read_u16::<BigEndian>()?);
-        assert_eq!(input.read_u16::<BigEndian>()?, 0); // pre_defined
+        let language = Language(Decode::decode(input)?);
+        assert_eq!(u16::decode(input)?, 0); // pre_defined
         Ok(Self {
             creation_time,
             modification_time,
