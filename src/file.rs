@@ -1,18 +1,26 @@
 use std::{
     fmt::{Debug, Formatter},
+    hash::Hasher,
     io::{Read, Write},
 };
-use std::hash::Hasher;
 
+use bstringify::bstringify;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use derivative::Derivative;
-use fixed::types::{U16F16, U8F8};
+use fixed::types::{U16F16, U2F30, U8F8};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("IO error")]
     Io(#[from] std::io::Error),
+
+    #[error("Invalid {r#type} box quantity, current {quantity}, expected {expected}")]
+    BoxQuantity {
+        r#type: &'static str,
+        quantity: usize,
+        expected: usize,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -44,40 +52,6 @@ impl Decode for u16 {
     }
 }
 
-impl Encode for u32 {
-    fn size(&self) -> u64 {
-        4
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u32::<BigEndian>(*self)?;
-        Ok(())
-    }
-}
-
-impl Decode for u32 {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        Ok(input.read_u32::<BigEndian>()?)
-    }
-}
-
-impl Encode for u64 {
-    fn size(&self) -> u64 {
-        8
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        output.write_u64::<BigEndian>(*self)?;
-        Ok(())
-    }
-}
-
-impl Decode for u64 {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        Ok(input.read_u64::<BigEndian>()?)
-    }
-}
-
 impl Encode for U8F8 {
     fn size(&self) -> u64 {
         2
@@ -95,6 +69,23 @@ impl Decode for U8F8 {
     }
 }
 
+impl Encode for u32 {
+    fn size(&self) -> u64 {
+        4
+    }
+
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        output.write_u32::<BigEndian>(*self)?;
+        Ok(())
+    }
+}
+
+impl Decode for u32 {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        Ok(input.read_u32::<BigEndian>()?)
+    }
+}
+
 impl Encode for U16F16 {
     fn size(&self) -> u64 {
         4
@@ -109,6 +100,40 @@ impl Encode for U16F16 {
 impl Decode for U16F16 {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         Ok(Self::from_bits(input.read_u32::<BigEndian>()?))
+    }
+}
+
+impl Encode for U2F30 {
+    fn size(&self) -> u64 {
+        4
+    }
+
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        output.write_u32::<BigEndian>(self.to_bits())?;
+        Ok(())
+    }
+}
+
+impl Decode for U2F30 {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        Ok(Self::from_bits(input.read_u32::<BigEndian>()?))
+    }
+}
+
+impl Encode for u64 {
+    fn size(&self) -> u64 {
+        8
+    }
+
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        output.write_u64::<BigEndian>(*self)?;
+        Ok(())
+    }
+}
+
+impl Decode for u64 {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        Ok(input.read_u64::<BigEndian>()?)
     }
 }
 
@@ -159,6 +184,122 @@ impl Debug for Language {
     }
 }
 
+#[derive(Debug)]
+pub struct Matrix {
+    pub a: U16F16,
+    pub b: U16F16,
+    pub u: U2F30,
+    pub c: U16F16,
+    pub d: U16F16,
+    pub v: U2F30,
+    pub x: U16F16,
+    pub y: U16F16,
+    pub w: U2F30,
+}
+
+impl Encode for Matrix {
+    fn size(&self) -> u64 {
+        9 * 4
+    }
+
+    fn encode(&self, output: &mut impl Write) -> Result<()> {
+        self.a.encode(output)?;
+        self.b.encode(output)?;
+        self.u.encode(output)?;
+        self.c.encode(output)?;
+        self.d.encode(output)?;
+        self.v.encode(output)?;
+        self.x.encode(output)?;
+        self.y.encode(output)?;
+        self.w.encode(output)
+    }
+}
+
+impl Decode for Matrix {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        Ok(Self {
+            a: Decode::decode(input)?,
+            b: Decode::decode(input)?,
+            u: Decode::decode(input)?,
+            c: Decode::decode(input)?,
+            d: Decode::decode(input)?,
+            v: Decode::decode(input)?,
+            x: Decode::decode(input)?,
+            y: Decode::decode(input)?,
+            w: Decode::decode(input)?,
+        })
+    }
+}
+
+macro_rules! decode_boxes {(
+    $input:ident,
+    $(
+        $quantifier:ident $type:ident $name:ident
+    ),* $(,)?
+) => (
+     while !$input.is_empty() {
+        let size = u32::decode($input)?;
+        let r#type: [u8; 4] = u32::decode($input)?.to_be_bytes();
+
+        let (mut data, remaining_data) = $input.split_at((size - 4 - 4) as usize);
+        match &r#type {
+            $(
+                bstringify!($type) => decode_box!(data $quantifier $type $name),
+            )*
+                _ => {}
+        }
+        *$input = remaining_data;
+    }
+
+    $(unwrap_box!($quantifier $type $name);)*
+)}
+
+macro_rules! decode_box {
+    ($input:ident optional $type:ident $name:ident) => {{
+        if $name.is_some() {
+            return Err(Error::BoxQuantity {
+                r#type: stringify!($type),
+                quantity: 2,
+                expected: 1,
+            });
+        }
+        $name = Some(Decode::decode(&mut $input)?);
+    }};
+
+    ($input:ident required $type:ident $name:ident) => {{
+        if $name.is_some() {
+            return Err(Error::BoxQuantity {
+                r#type: stringify!($type),
+                quantity: 2,
+                expected: 1,
+            });
+        }
+        $name = Some(Decode::decode(&mut $input)?);
+    }};
+
+    ($input:ident multiple $type:ident $name:ident) => {
+        $name.push(Decode::decode(&mut $input)?)
+    };
+}
+
+macro_rules! unwrap_box {
+    (optional $type:ident $name:ident) => {};
+
+    (required $type:ident $name:ident) => {
+        let $name = $name.ok_or(Error::BoxQuantity {
+            r#type: stringify!($type),
+            quantity: 0,
+            expected: 1,
+        })?;
+    };
+
+    (multiple $type:ident $name:ident) => {};
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct File {
@@ -195,41 +336,25 @@ impl Decode for File {
         let mut movie = None;
         let mut media_data = vec![];
 
-        while !input.is_empty() {
-            let size = u32::decode(input)?;
-            let r#type: [u8; 4] = u32::decode(input)?.to_be_bytes();
-
-            let (mut data, remaining_data) = input.split_at((size - 4 - 4) as usize);
-            match &r#type {
-                b"ftyp" => {
-                    assert!(file_type.is_none());
-                    file_type = Some(Decode::decode(&mut data)?)
-                }
-                b"pdin" => {}
-                b"moov" => {
-                    assert!(movie.is_none());
-                    movie = Some(Decode::decode(&mut data)?)
-                }
-                b"moof" => {}
-                b"mfra" => {}
-                b"mdat" => media_data.push(Decode::decode(&mut data)?),
-                b"free" => {}
-                b"skip" => {}
-                b"meta" => {}
-                _ => {}
-            }
-            *input = remaining_data;
+        decode_boxes! {
+            input,
+            required ftyp file_type,
+            required moov movie,
+            multiple mdat media_data,
         }
 
         Ok(Self {
-            file_type: file_type.unwrap(),
-            movie: movie.unwrap(),
+            file_type,
+            movie,
             media_data,
         })
     }
 }
 
-// 4.3
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 4.3
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct FileType {
     pub major_brand: FourCC,
@@ -273,7 +398,10 @@ impl Decode for FileType {
     }
 }
 
-// 8.1
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.1
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct Movie {
     pub header: MovieHeader,
@@ -302,33 +430,21 @@ impl Decode for Movie {
         let mut header = None;
         let mut tracks = vec![];
 
-        while !input.is_empty() {
-            let size = u32::decode(input)?;
-            let r#type: [u8; 4] = u32::decode(input)?.to_be_bytes();
-
-            let (mut data, remaining_data) = input.split_at((size - 4 - 4) as usize);
-            match &r#type {
-                b"mvhd" => {
-                    assert!(header.is_none());
-                    header = Some(Decode::decode(&mut data)?)
-                }
-                b"trak" => tracks.push(Decode::decode(&mut data)?),
-                b"mvex" => {}
-                b"ipmc" => {}
-                _ => {}
-            }
-            *input = remaining_data;
+        decode_boxes! {
+            input,
+            required mvhd header,
+            multiple trak tracks,
         }
 
         assert!(!tracks.is_empty());
-        Ok(Self {
-            header: header.unwrap(),
-            tracks,
-        })
+        Ok(Self { header, tracks })
     }
 }
 
-// 8.2
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.2
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct MediaData {
     pub data: Vec<u8>,
@@ -357,7 +473,10 @@ impl Decode for MediaData {
     }
 }
 
-// 8.3
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.3
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct MovieHeader {
     pub creation_time: u64,
@@ -366,7 +485,7 @@ pub struct MovieHeader {
     pub duration: u64,
     pub rate: U16F16,
     pub volume: U8F8,
-    pub matrix: [u32; 9],
+    pub matrix: Matrix,
     pub next_track_id: u32,
 }
 
@@ -390,9 +509,7 @@ impl Encode for MovieHeader {
         0u16.encode(output)?; // reserved
         0u32.encode(output)?; // reserved
         0u32.encode(output)?; // reserved
-        for value in self.matrix {
-            value.encode(output)?;
-        }
+        self.matrix.encode(output)?;
         0u32.encode(output)?; // reserved
         0u32.encode(output)?; // reserved
         0u32.encode(output)?; // reserved
@@ -432,17 +549,7 @@ impl Decode for MovieHeader {
         assert_eq!(u16::decode(input)?, 0); // reserved
         assert_eq!(u32::decode(input)?, 0); // reserved
         assert_eq!(u32::decode(input)?, 0); // reserved
-        let matrix = [
-            Decode::decode(input)?,
-            Decode::decode(input)?,
-            Decode::decode(input)?,
-            Decode::decode(input)?,
-            Decode::decode(input)?,
-            Decode::decode(input)?,
-            Decode::decode(input)?,
-            Decode::decode(input)?,
-            Decode::decode(input)?,
-        ];
+        let matrix = Decode::decode(input)?;
         assert_eq!(u32::decode(input)?, 0); // reserved
         assert_eq!(u32::decode(input)?, 0); // reserved
         assert_eq!(u32::decode(input)?, 0); // reserved
@@ -464,7 +571,10 @@ impl Decode for MovieHeader {
     }
 }
 
-// 8.4
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.4
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct Track {
     pub header: TrackHeader,
@@ -495,39 +605,25 @@ impl Decode for Track {
         let mut edit = None;
         let mut media = None;
 
-        while !input.is_empty() {
-            let size = u32::decode(input)?;
-            let r#type: [u8; 4] = u32::decode(input)?.to_be_bytes();
-
-            let (mut data, remaining_data) = input.split_at((size - 4 - 4) as usize);
-            match &r#type {
-                b"tkhd" => {
-                    assert!(header.is_none());
-                    header = Some(Decode::decode(&mut data)?)
-                }
-                b"tref" => {}
-                b"edts" => {
-                    assert!(edit.is_none());
-                    edit = Some(Decode::decode(&mut data)?)
-                }
-                b"mdia" => {
-                    assert!(media.is_none());
-                    media = Some(Decode::decode(&mut data)?)
-                }
-                _ => {}
-            }
-            *input = remaining_data;
+        decode_boxes! {
+            input,
+            required tkhd header,
+            optional edts edit,
+            required mdia media,
         }
 
         Ok(Self {
-            header: header.unwrap(),
+            header,
             edit,
-            media: media.unwrap(),
+            media,
         })
     }
 }
 
-// 8.5
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.5
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct TrackHeader {
     pub creation_time: u64,
@@ -537,7 +633,7 @@ pub struct TrackHeader {
     pub layer: u16,
     pub alternate_group: u16,
     pub volume: U8F8,
-    pub matrix: [u32; 9],
+    pub matrix: Matrix,
     pub width: U16F16,
     pub height: U16F16,
 }
@@ -564,9 +660,7 @@ impl Encode for TrackHeader {
         self.alternate_group.encode(output)?;
         self.volume.encode(output)?;
         0u16.encode(output)?; // reserved
-        for value in self.matrix {
-            value.encode(output)?;
-        }
+        self.matrix.encode(output)?;
         self.width.encode(output)?;
         self.height.encode(output)
     }
@@ -604,17 +698,7 @@ impl Decode for TrackHeader {
         let alternate_group = Decode::decode(input)?;
         let volume = Decode::decode(input)?;
         assert_eq!(u16::decode(input)?, 0); // reserved
-        let matrix = [
-            Decode::decode(input)?,
-            Decode::decode(input)?,
-            Decode::decode(input)?,
-            Decode::decode(input)?,
-            Decode::decode(input)?,
-            Decode::decode(input)?,
-            Decode::decode(input)?,
-            Decode::decode(input)?,
-            Decode::decode(input)?,
-        ];
+        let matrix = Decode::decode(input)?;
         let width = Decode::decode(input)?;
         let height = Decode::decode(input)?;
 
@@ -633,7 +717,10 @@ impl Decode for TrackHeader {
     }
 }
 
-// 8.7
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.7
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct Media {
     pub header: MediaHeader,
@@ -662,38 +749,25 @@ impl Decode for Media {
         let mut handler = None;
         let mut information = None;
 
-        while !input.is_empty() {
-            let size = input.read_u32::<BigEndian>()?;
-            let r#type: [u8; 4] = input.read_u32::<BigEndian>()?.to_be_bytes();
-
-            let (mut data, remaining_data) = input.split_at((size - 8) as usize);
-            match &r#type {
-                b"mdhd" => {
-                    assert!(header.is_none());
-                    header = Some(Decode::decode(&mut data)?)
-                }
-                b"hdlr" => {
-                    assert!(handler.is_none());
-                    handler = Some(Decode::decode(&mut data)?)
-                }
-                b"minf" => {
-                    assert!(information.is_none());
-                    information = Some(Decode::decode(&mut data)?)
-                }
-                _ => {}
-            }
-            *input = remaining_data;
+        decode_boxes! {
+            input,
+            required mdhd header,
+            required hdlr handler,
+            required minf information,
         }
 
         Ok(Self {
-            header: header.unwrap(),
-            handler: handler.unwrap(),
-            information: information.unwrap(),
+            header,
+            handler,
+            information,
         })
     }
 }
 
-// 8.8
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.8
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct MediaHeader {
     pub creation_time: u64,
@@ -760,7 +834,10 @@ impl Decode for MediaHeader {
     }
 }
 
-// 8.9
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.9
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct Handler {
     pub r#type: FourCC,
@@ -803,7 +880,10 @@ impl Decode for Handler {
     }
 }
 
-// 8.10
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.10
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct MediaInformation {
     pub header: MediaInformationHeader,
@@ -837,59 +917,47 @@ impl Encode for MediaInformation {
 
 impl Decode for MediaInformation {
     fn decode(input: &mut &[u8]) -> Result<Self> {
-        let mut header = None;
+        let mut video_header = None;
+        let mut sound_header = None;
         let mut data_information = None;
         let mut sample_table = None;
 
-        while !input.is_empty() {
-            let size = input.read_u32::<BigEndian>()?;
-            let r#type: [u8; 4] = input.read_u32::<BigEndian>()?.to_be_bytes();
-
-            let (mut data, remaining_data) = input.split_at((size - 8) as usize);
-            match &r#type {
-                b"vmhd" => {
-                    assert!(header.is_none());
-                    header = Some(MediaInformationHeader::Video(Decode::decode(&mut data)?))
-                }
-                b"smhd" => {
-                    assert!(header.is_none());
-                    header = Some(MediaInformationHeader::Sound(Decode::decode(&mut data)?))
-                }
-                b"hmhd" => {
-                    assert!(header.is_none());
-                }
-                b"nmhd" => {
-                    assert!(header.is_none());
-                }
-                b"dinf" => {
-                    assert!(data_information.is_none());
-                    data_information = Some(Decode::decode(&mut data)?)
-                }
-                b"stbl" => {
-                    assert!(sample_table.is_none());
-                    sample_table = Some(Decode::decode(&mut data)?)
-                }
-                _ => {}
-            }
-            *input = remaining_data;
+        decode_boxes! {
+            input,
+            optional vmhd video_header,
+            optional smhd sound_header,
+            required dinf data_information,
+            required stbl sample_table,
         }
 
         Ok(Self {
-            header: header.unwrap(),
-            data_information: data_information.unwrap(),
-            sample_table: sample_table.unwrap(),
+            header: if let Some(video_header) = video_header {
+                MediaInformationHeader::Video(video_header)
+            } else if let Some(sound_header) = sound_header {
+                MediaInformationHeader::Sound(sound_header)
+            } else {
+                todo!()
+            },
+            data_information,
+            sample_table,
         })
     }
 }
 
-// 8.11
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.11
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub enum MediaInformationHeader {
     Video(VideoMediaHeader),
     Sound(SoundMediaHeader),
 }
 
-// 8.11.2
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.11.2
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct VideoMediaHeader {
     pub graphicsmode: u16,
@@ -931,7 +999,10 @@ impl Decode for VideoMediaHeader {
     }
 }
 
-// 8.11.3
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.11.3
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct SoundMediaHeader {
     pub balance: U8F8,
@@ -965,7 +1036,10 @@ impl Decode for SoundMediaHeader {
     }
 }
 
-// 8.12
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.12
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct DataInformation {
     pub reference: DataReference,
@@ -1009,7 +1083,10 @@ impl Decode for DataInformation {
     }
 }
 
-// 8.13
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.13
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub enum DataEntry {
     Url(DataEntryUrl),
@@ -1143,7 +1220,10 @@ impl Decode for DataReference {
     }
 }
 
-// 8.14
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.14
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct SampleTable {
@@ -1200,67 +1280,33 @@ impl Decode for SampleTable {
         let mut sync_sample = None;
         let mut sample_to_group = None;
 
-        while !input.is_empty() {
-            let size = input.read_u32::<BigEndian>()?;
-            let r#type: [u8; 4] = input.read_u32::<BigEndian>()?.to_be_bytes();
-
-            let (mut data, remaining_data) = input.split_at((size - 8) as usize);
-            match &r#type {
-                b"stsd" => {
-                    assert!(description.is_none());
-                    description = Some(Decode::decode(&mut data)?)
-                }
-                b"stts" => {
-                    assert!(time_to_sample.is_none());
-                    time_to_sample = Some(Decode::decode(&mut data)?)
-                }
-                b"ctts" => {}
-                b"stsc" => {
-                    assert!(sample_to_chunk.is_none());
-                    sample_to_chunk = Some(Decode::decode(&mut data)?)
-                }
-                b"stsz" => {
-                    assert!(sample_size.is_none());
-                    sample_size = Some(Decode::decode(&mut data)?)
-                }
-                b"stz2" => {}
-                b"stco" => {
-                    assert!(chunk_offset.is_none());
-                    chunk_offset = Some(Decode::decode(&mut data)?)
-                }
-                b"co64" => {}
-                b"stss" => {
-                    assert!(sync_sample.is_none());
-                    sync_sample = Some(Decode::decode(&mut data)?)
-                }
-                b"stsh" => {}
-                b"padb" => {}
-                b"stdp" => {}
-                b"sdtp" => {}
-                b"sbgp" => {
-                    assert!(sample_to_group.is_none());
-                    sample_to_group = Some(Decode::decode(&mut data)?)
-                }
-                b"sgpd" => {}
-                b"subs" => {}
-                _ => {}
-            }
-            *input = remaining_data;
+        decode_boxes! {
+            input,
+            required stsd description,
+            required stts time_to_sample,
+            required stsc sample_to_chunk,
+            required stsz sample_size,
+            required stco chunk_offset,
+            optional stss sync_sample,
+            optional sbgp sample_to_group,
         }
 
         Ok(Self {
-            description: description.unwrap(),
-            time_to_sample: time_to_sample.unwrap(),
-            sample_to_chunk: sample_to_chunk.unwrap(),
-            sample_size: sample_size.unwrap(),
-            chunk_offset: chunk_offset.unwrap(),
+            description,
+            time_to_sample,
+            sample_to_chunk,
+            sample_size,
+            chunk_offset,
             sync_sample,
             sample_to_group,
         })
     }
 }
 
-// 8.15.2
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.15.2
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct TimeToSample {
     pub entries: Vec<(u32, u32)>,
@@ -1303,7 +1349,10 @@ impl Decode for TimeToSample {
     }
 }
 
-// 8.16
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.16
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct VisualSampleEntry {
     pub data_reference_index: u16,
@@ -1314,12 +1363,27 @@ pub struct VisualSampleEntry {
     pub frame_count: u16,
     pub compressorname: [u8; 32],
     pub depth: u16,
-    pub extra: Vec<u8>
+    pub extra: Vec<u8>,
 }
 
 impl Encode for VisualSampleEntry {
     fn size(&self) -> u64 {
-        4 + 4 + 6 * 1 + 2 + 2 + 2 + 3 * 4 + 2 + 2 + 4 + 4 + 4 + 2 + 32 + 2 + 2 + self.extra.len() as u64
+        4 + 4
+            + 6 * 1
+            + 2
+            + 2
+            + 2
+            + 3 * 4
+            + 2
+            + 2
+            + 4
+            + 4
+            + 4
+            + 2
+            + 32
+            + 2
+            + 2
+            + self.extra.len() as u64
     }
 
     fn encode(&self, output: &mut impl Write) -> Result<()> {
@@ -1400,7 +1464,7 @@ pub struct AudioSampleEntry {
     pub channelcount: u16,
     pub samplesize: u16,
     pub samplerate: U16F16,
-    pub extra: Vec<u8>
+    pub extra: Vec<u8>,
 }
 
 impl Encode for AudioSampleEntry {
@@ -1469,7 +1533,12 @@ pub struct SampleDescription {
 
 impl Encode for SampleDescription {
     fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + 4 + self.avc1.as_ref().map_or(0, Encode::size) + self.mp4a.as_ref().map_or(0, Encode::size)
+        4 + 4
+            + 1
+            + 3
+            + 4
+            + self.avc1.as_ref().map_or(0, Encode::size)
+            + self.mp4a.as_ref().map_or(0, Encode::size)
     }
 
     fn encode(&self, output: &mut impl Write) -> Result<()> {
@@ -1515,7 +1584,10 @@ impl Decode for SampleDescription {
     }
 }
 
-// 8.17
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.17
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub enum SampleSize {
     Global(u32),
@@ -1579,7 +1651,10 @@ impl Decode for SampleSize {
     }
 }
 
-// 8.18
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.18
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct SampleToChunk {
     pub entries: Vec<(u32, u32, u32)>,
@@ -1624,7 +1699,10 @@ impl Decode for SampleToChunk {
     }
 }
 
-// 8.19
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.19
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct ChunkOffset {
     pub entries: Vec<u32>,
@@ -1665,7 +1743,10 @@ impl Decode for ChunkOffset {
     }
 }
 
-// 8.20
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.20
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct SyncSample {
     pub entries: Vec<u32>,
@@ -1706,7 +1787,10 @@ impl Decode for SyncSample {
     }
 }
 
-// 8.25
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.25
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct Edit {
     edit_list: Option<EditList>,
@@ -1747,7 +1831,10 @@ impl Decode for Edit {
     }
 }
 
-// 8.26
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.26
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct EditList {
     pub entries: Vec<(u32, u32, U16F16)>,
@@ -1793,7 +1880,10 @@ impl Decode for EditList {
     }
 }
 
-// 8.40.3.2
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2005 8.40.3.2
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct SampleToGroup {
     pub grouping_type: FourCC,
