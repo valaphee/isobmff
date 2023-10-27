@@ -1,6 +1,5 @@
 use std::{
     fmt::{Debug, Formatter},
-    hash::Hasher,
     io::{Read, Write},
 };
 
@@ -325,8 +324,7 @@ impl Encode for File {
         for media_data in &self.media_data {
             media_data.encode(output)?;
         }
-        self.movie.encode(output)?;
-        Ok(())
+        self.movie.encode(output)
     }
 }
 
@@ -389,7 +387,6 @@ impl Decode for FileType {
             .map(|chunk| FourCC(u32::from_be_bytes(chunk.try_into().unwrap())))
             .collect();
         *input = &input[input.len()..];
-
         Ok(Self {
             major_brand,
             minor_version,
@@ -436,7 +433,6 @@ impl Decode for Movie {
             multiple trak tracks,
         }
 
-        assert!(!tracks.is_empty());
         Ok(Self { header, tracks })
     }
 }
@@ -468,7 +464,6 @@ impl Decode for MediaData {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let data = input.to_owned();
         *input = &input[input.len()..];
-
         Ok(Self { data })
     }
 }
@@ -556,8 +551,7 @@ impl Decode for MovieHeader {
         assert_eq!(u32::decode(input)?, 0); // reserved
         assert_eq!(u32::decode(input)?, 0); // reserved
         assert_eq!(u32::decode(input)?, 0); // reserved
-        let next_track_id = input.read_u32::<BigEndian>()?;
-
+        let next_track_id = Decode::decode(input)?;
         Ok(Self {
             creation_time,
             modification_time,
@@ -701,7 +695,6 @@ impl Decode for TrackHeader {
         let matrix = Decode::decode(input)?;
         let width = Decode::decode(input)?;
         let height = Decode::decode(input)?;
-
         Ok(Self {
             creation_time,
             modification_time,
@@ -823,7 +816,6 @@ impl Decode for MediaHeader {
         }
         let language = Language(input.read_u16::<BigEndian>()?);
         assert_eq!(input.read_u16::<BigEndian>()?, 0); // pre_defined
-
         Ok(Self {
             creation_time,
             modification_time,
@@ -875,7 +867,6 @@ impl Decode for Handler {
         assert_eq!(input.read_u32::<BigEndian>()?, 0); // reserved
         assert_eq!(input.read_u32::<BigEndian>()?, 0); // reserved
         let name = Decode::decode(input)?;
-
         Ok(Self { r#type, name })
     }
 }
@@ -1031,7 +1022,6 @@ impl Decode for SoundMediaHeader {
 
         let balance = U8F8::from_bits(input.read_u16::<BigEndian>()?);
         assert_eq!(input.read_u16::<BigEndian>()?, 0); // reserved
-
         Ok(Self { balance })
     }
 }
@@ -1062,24 +1052,12 @@ impl Decode for DataInformation {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let mut reference = None;
 
-        while !input.is_empty() {
-            let size = input.read_u32::<BigEndian>()?;
-            let r#type: [u8; 4] = input.read_u32::<BigEndian>()?.to_be_bytes();
-
-            let (mut data, remaining_data) = input.split_at((size - 8) as usize);
-            match &r#type {
-                b"dref" => {
-                    assert!(reference.is_none());
-                    reference = Some(Decode::decode(&mut data)?)
-                }
-                _ => {}
-            }
-            *input = remaining_data;
+        decode_boxes! {
+            input,
+            required dref reference,
         }
 
-        Ok(Self {
-            reference: reference.unwrap(),
-        })
+        Ok(Self { reference })
     }
 }
 
@@ -1201,11 +1179,11 @@ impl Decode for DataReference {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
 
-        let entry_count = input.read_u32::<BigEndian>()?;
+        let entry_count = u32::decode(input)?;
         let mut entries = Vec::default();
         for _ in 0..entry_count {
-            let size = input.read_u32::<BigEndian>()?;
-            let r#type: [u8; 4] = input.read_u32::<BigEndian>()?.to_be_bytes();
+            let size = u32::decode(input)?;
+            let r#type: [u8; 4] = u32::decode(input)?.to_be_bytes();
 
             let (mut data, remaining_data) = input.split_at((size - 8) as usize);
             match &r#type {
@@ -1215,7 +1193,6 @@ impl Decode for DataReference {
             }
             *input = remaining_data;
         }
-
         Ok(Self { entries })
     }
 }
@@ -1309,7 +1286,13 @@ impl Decode for SampleTable {
 
 #[derive(Debug)]
 pub struct TimeToSample {
-    pub entries: Vec<(u32, u32)>,
+    pub entries: Vec<TimeToSampleEntry>,
+}
+
+#[derive(Debug)]
+pub struct TimeToSampleEntry {
+    pub sample_count: u32,
+    pub sample_delta: u32,
 }
 
 impl Encode for TimeToSample {
@@ -1325,8 +1308,8 @@ impl Encode for TimeToSample {
 
         (self.entries.len() as u32).encode(output)?;
         for entry in &self.entries {
-            entry.0.encode(output)?;
-            entry.1.encode(output)?;
+            entry.sample_count.encode(output)?;
+            entry.sample_delta.encode(output)?;
         }
         Ok(())
     }
@@ -1337,14 +1320,14 @@ impl Decode for TimeToSample {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
 
-        let entry_count = input.read_u32::<BigEndian>()?;
+        let entry_count = u32::decode(input)?;
         let mut entries = Vec::default();
         for _ in 0..entry_count {
-            let sample_count = input.read_u32::<BigEndian>()?;
-            let sample_delta = input.read_u32::<BigEndian>()?;
-            entries.push((sample_count, sample_delta))
+            entries.push(TimeToSampleEntry {
+                sample_count: Decode::decode(input)?,
+                sample_delta: Decode::decode(input)?,
+            });
         }
-
         Ok(Self { entries })
     }
 }
@@ -1443,7 +1426,6 @@ impl Decode for VisualSampleEntry {
         let depth = Decode::decode(input)?;
         assert_eq!(u16::decode(input)?, u16::MAX); // pre_defined
         let extra = input.to_owned();
-
         Ok(Self {
             data_reference_index,
             width,
@@ -1514,7 +1496,6 @@ impl Decode for AudioSampleEntry {
         assert_eq!(u16::decode(input)?, 0); // reserved
         let samplerate = Decode::decode(input)?;
         let extra = input.to_owned();
-
         Ok(Self {
             data_reference_index,
             channelcount,
@@ -1566,18 +1547,12 @@ impl Decode for SampleDescription {
         let mut avc1 = None;
         let mut mp4a = None;
 
-        let entry_count = input.read_u32::<BigEndian>()?;
-        for _ in 0..entry_count {
-            let size = input.read_u32::<BigEndian>()?;
-            let r#type: [u8; 4] = input.read_u32::<BigEndian>()?.to_be_bytes();
-
-            let (mut data, remaining_data) = input.split_at((size - 8) as usize);
-            match &r#type {
-                b"avc1" => avc1 = Some(Decode::decode(&mut data)?),
-                b"mp4a" => mp4a = Some(Decode::decode(&mut data)?),
-                _ => {}
-            }
-            *input = remaining_data;
+        u32::decode(input)?;
+        // entry_count
+        decode_boxes! {
+            input,
+            optional avc1 avc1,
+            optional mp4a mp4a,
         }
 
         Ok(Self { avc1, mp4a })
@@ -1590,8 +1565,8 @@ impl Decode for SampleDescription {
 
 #[derive(Debug)]
 pub enum SampleSize {
-    Global(u32),
-    Unique(Vec<u32>),
+    Value(u32),
+    PerSample(Vec<u32>),
 }
 
 impl Encode for SampleSize {
@@ -1602,8 +1577,8 @@ impl Encode for SampleSize {
             + 4
             + 4
             + match self {
-                SampleSize::Global(_) => 0,
-                SampleSize::Unique(samples) => samples.len() as u64 * 4,
+                SampleSize::Value(_) => 0,
+                SampleSize::PerSample(samples) => samples.len() as u64 * 4,
             }
     }
 
@@ -1614,11 +1589,11 @@ impl Encode for SampleSize {
         output.write_u24::<BigEndian>(0)?; // flags
 
         match self {
-            SampleSize::Global(sample_size) => {
+            SampleSize::Value(sample_size) => {
                 sample_size.encode(output)?;
                 0u32.encode(output)?; // sample_count
             }
-            SampleSize::Unique(samples) => {
+            SampleSize::PerSample(samples) => {
                 0u32.encode(output)?; // sample_size
                 (samples.len() as u32).encode(output)?;
                 for sample in samples {
@@ -1635,19 +1610,17 @@ impl Decode for SampleSize {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
 
-        let sample_size = input.read_u32::<BigEndian>()?;
-        let sample_count = input.read_u32::<BigEndian>()?;
+        let sample_size = Decode::decode(input)?;
         if sample_size != 0 {
-            return Ok(SampleSize::Global(sample_size));
+            return Ok(SampleSize::Value(sample_size));
         }
 
+        let sample_count = u32::decode(input)?;
         let mut samples = Vec::default();
         for _ in 0..sample_count {
-            let entry_size = input.read_u32::<BigEndian>()?;
-            samples.push(entry_size)
+            samples.push(Decode::decode(input)?)
         }
-
-        Ok(SampleSize::Unique(samples))
+        Ok(SampleSize::PerSample(samples))
     }
 }
 
@@ -1657,7 +1630,14 @@ impl Decode for SampleSize {
 
 #[derive(Debug)]
 pub struct SampleToChunk {
-    pub entries: Vec<(u32, u32, u32)>,
+    pub entries: Vec<SampleToChunkEntry>,
+}
+
+#[derive(Debug)]
+pub struct SampleToChunkEntry {
+    pub first_chunk: u32,
+    pub samples_per_chunk: u32,
+    pub sample_description_index: u32,
 }
 
 impl Encode for SampleToChunk {
@@ -1673,9 +1653,9 @@ impl Encode for SampleToChunk {
 
         (self.entries.len() as u32).encode(output)?;
         for entry in &self.entries {
-            entry.0.encode(output)?;
-            entry.1.encode(output)?;
-            entry.2.encode(output)?;
+            entry.first_chunk.encode(output)?;
+            entry.samples_per_chunk.encode(output)?;
+            entry.sample_description_index.encode(output)?;
         }
         Ok(())
     }
@@ -1689,12 +1669,12 @@ impl Decode for SampleToChunk {
         let entry_count = u32::decode(input)?;
         let mut entries = Vec::default();
         for _ in 0..entry_count {
-            let first_chunk = u32::decode(input)?;
-            let samples_per_chunk = u32::decode(input)?;
-            let sample_description_index = u32::decode(input)?;
-            entries.push((first_chunk, samples_per_chunk, sample_description_index))
+            entries.push(SampleToChunkEntry {
+                first_chunk: Decode::decode(input)?,
+                samples_per_chunk: Decode::decode(input)?,
+                sample_description_index: Decode::decode(input)?,
+            })
         }
-
         Ok(Self { entries })
     }
 }
@@ -1735,10 +1715,8 @@ impl Decode for ChunkOffset {
         let entry_count = u32::decode(input)?;
         let mut entries = Vec::default();
         for _ in 0..entry_count {
-            let chunk_offset = u32::decode(input)?;
-            entries.push(chunk_offset)
+            entries.push(Decode::decode(input)?)
         }
-
         Ok(Self { entries })
     }
 }
@@ -1777,12 +1755,10 @@ impl Decode for SyncSample {
         input.read_u24::<BigEndian>()?; // flags
 
         let entry_count = u32::decode(input)?;
-        let mut entries = Vec::default();
+        let mut entries = vec![];
         for _ in 0..entry_count {
-            let sample_number = Decode::decode(input)?;
-            entries.push(sample_number)
+            entries.push(Decode::decode(input)?)
         }
-
         Ok(Self { entries })
     }
 }
@@ -1816,17 +1792,11 @@ impl Decode for Edit {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let mut edit_list = None;
 
-        while !input.is_empty() {
-            let size = input.read_u32::<BigEndian>()?;
-            let r#type: [u8; 4] = input.read_u32::<BigEndian>()?.to_be_bytes();
-
-            let (mut data, remaining_data) = input.split_at((size - 8) as usize);
-            match &r#type {
-                b"elst" => edit_list = Some(Decode::decode(&mut data)?),
-                _ => {}
-            }
-            *input = remaining_data;
+        decode_boxes! {
+            input,
+            optional elst edit_list,
         }
+
         Ok(Self { edit_list })
     }
 }
@@ -1837,7 +1807,14 @@ impl Decode for Edit {
 
 #[derive(Debug)]
 pub struct EditList {
-    pub entries: Vec<(u32, u32, U16F16)>,
+    pub entries: Vec<EditListEntry>,
+}
+
+#[derive(Debug)]
+pub struct EditListEntry {
+    pub segment_duration: u64,
+    pub media_time: u64,
+    pub media_rate: U16F16,
 }
 
 impl Encode for EditList {
@@ -1853,9 +1830,9 @@ impl Encode for EditList {
 
         (self.entries.len() as u32).encode(output)?;
         for entry in &self.entries {
-            entry.0.encode(output)?;
-            entry.1.encode(output)?;
-            entry.2.encode(output)?;
+            entry.segment_duration.encode(output)?;
+            entry.media_time.encode(output)?;
+            entry.media_rate.encode(output)?;
         }
         Ok(())
     }
@@ -1863,19 +1840,31 @@ impl Encode for EditList {
 
 impl Decode for EditList {
     fn decode(input: &mut &[u8]) -> Result<Self> {
-        assert_eq!(input.read_u8()?, 0); // version
+        let version = input.read_u8()?;
         input.read_u24::<BigEndian>()?; // flags
 
         let entry_count = u32::decode(input)?;
-        let mut entries = Vec::default();
+        let mut entries = vec![];
         for _ in 0..entry_count {
-            let segment_duration = Decode::decode(input)?;
-            let media_time = Decode::decode(input)?;
-            let media_rate = Decode::decode(input)?;
-
-            entries.push((segment_duration, media_time, media_rate))
+            let segment_duration;
+            let media_time;
+            match version {
+                0 => {
+                    segment_duration = u32::decode(input)? as u64;
+                    media_time = u32::decode(input)? as u64;
+                }
+                1 => {
+                    segment_duration = Decode::decode(input)?;
+                    media_time = Decode::decode(input)?;
+                }
+                _ => panic!(),
+            }
+            entries.push(EditListEntry {
+                segment_duration,
+                media_time,
+                media_rate: Decode::decode(input)?,
+            })
         }
-
         Ok(Self { entries })
     }
 }
@@ -1887,7 +1876,13 @@ impl Decode for EditList {
 #[derive(Debug)]
 pub struct SampleToGroup {
     pub grouping_type: FourCC,
-    pub entries: Vec<(u32, u32)>,
+    pub entries: Vec<SampleToGroupEntry>,
+}
+
+#[derive(Debug)]
+pub struct SampleToGroupEntry {
+    pub sample_count: u32,
+    pub group_description_index: u32,
 }
 
 impl Encode for SampleToGroup {
@@ -1904,8 +1899,8 @@ impl Encode for SampleToGroup {
         self.grouping_type.0.encode(output)?;
         (self.entries.len() as u32).encode(output)?;
         for entry in &self.entries {
-            entry.0.encode(output)?;
-            entry.1.encode(output)?;
+            entry.sample_count.encode(output)?;
+            entry.group_description_index.encode(output)?;
         }
         Ok(())
     }
@@ -1918,13 +1913,13 @@ impl Decode for SampleToGroup {
 
         let grouping_type = FourCC(Decode::decode(input)?);
         let entry_count = u32::decode(input)?;
-        let mut entries = Vec::default();
+        let mut entries = vec![];
         for _ in 0..entry_count {
-            let sample_count = Decode::decode(input)?;
-            let group_description_index = Decode::decode(input)?;
-            entries.push((sample_count, group_description_index))
+            entries.push(SampleToGroupEntry {
+                sample_count: Decode::decode(input)?,
+                group_description_index: Decode::decode(input)?,
+            })
         }
-
         Ok(Self {
             grouping_type,
             entries,
