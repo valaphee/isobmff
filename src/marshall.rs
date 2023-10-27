@@ -176,11 +176,11 @@ impl FromStr for FourCC {
     type Err = ();
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        Ok(Self(s.as_bytes().try_into().unwrap()))
+        Ok(Self(u32::from_be_bytes(s.as_bytes().try_into().unwrap())))
     }
 }
 
-pub struct Language(u16);
+pub struct Language(pub u16);
 
 impl Debug for Language {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -1210,16 +1210,12 @@ impl Decode for DataReferenceBox {
 // ISO/IEC 14496-12:2005 8.14
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Derivative)]
-#[derivative(Debug)]
+#[derive(Debug)]
 pub struct SampleTableBox {
     pub description: SampleDescriptionBox,
     pub time_to_sample: TimeToSampleBox,
-    #[derivative(Debug = "ignore")]
     pub sample_to_chunk: SampleToChunkBox,
-    #[derivative(Debug = "ignore")]
     pub sample_size: SampleSizeBox,
-    #[derivative(Debug = "ignore")]
     pub chunk_offset: ChunkOffsetBox,
     pub sync_sample: Option<SyncSampleBox>,
     pub sample_to_group: Option<SampleToGroupBox>,
@@ -1386,7 +1382,7 @@ impl Encode for VisualSampleEntry {
 
     fn encode(&self, output: &mut impl Write) -> Result<()> {
         (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"avc1").encode(output)?; // type
+        u32::from_be_bytes(*b"av01").encode(output)?; // type
 
         output.write_u8(0)?; // reserved
         output.write_u8(0)?; // reserved

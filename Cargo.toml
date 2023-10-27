@@ -10,5 +10,17 @@ bstringify = "0.1.2"
 byteorder = "1.5.0"
 derivative = "2.2.0"
 fixed = "1.24.0"
+fixed-macro = "1.2.0"
 memmap2 = "0.9.0"
 thiserror = "1.0.50"
+
+rav1e = { version = "0.6.6", features = ["unstable", "channel-api"] }
+windows = { version = "0.51.1", features = [
+    "Win32_Foundation",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+] }
