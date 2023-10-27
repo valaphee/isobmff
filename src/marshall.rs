@@ -1185,7 +1185,7 @@ impl Decode for DataReference {
             let size = u32::decode(input)?;
             let r#type: [u8; 4] = u32::decode(input)?.to_be_bytes();
 
-            let (mut data, remaining_data) = input.split_at((size - 8) as usize);
+            let (mut data, remaining_data) = input.split_at((size - 4 - 4) as usize);
             match &r#type {
                 b"url " => entries.push(DataEntry::Url(Decode::decode(&mut data)?)),
                 b"urn " => entries.push(DataEntry::Urn(Decode::decode(&mut data)?)),

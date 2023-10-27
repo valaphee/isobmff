@@ -1,6 +1,6 @@
 extern crate core;
 
-use mp4::file::{Decode, Encode, File};
+use mp4::marshall::{Decode, Encode, File};
 
 fn main() {
     let mmap = unsafe {
