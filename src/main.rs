@@ -1,11 +1,9 @@
-extern crate core;
-
 use mp4::marshall::{Decode, Encode, File};
 
 fn main() {
     let mmap = unsafe {
         memmap2::Mmap::map(
-            &std::fs::File::open(r#"Z:\Valaphee\Videos\yt1s.com - FURRY APOCALYPSE_1080p.mp4"#)
+            &std::fs::File::open(r#"test.mp4"#)
                 .unwrap(),
         )
     }

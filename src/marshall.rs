@@ -302,10 +302,10 @@ macro_rules! unwrap_box {
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct File {
-    pub file_type: FileType,
-    pub movie: Movie,
+    pub file_type: FileTypeBox,
+    pub movie: MovieBox,
     #[derivative(Debug = "ignore")]
-    pub media_data: Vec<MediaData>,
+    pub media_data: Vec<MediaDataBox>,
 }
 
 impl Encode for File {
@@ -354,13 +354,13 @@ impl Decode for File {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct FileType {
+pub struct FileTypeBox {
     pub major_brand: FourCC,
     pub minor_version: u32,
     pub compatible_brands: Vec<FourCC>,
 }
 
-impl Encode for FileType {
+impl Encode for FileTypeBox {
     fn size(&self) -> u64 {
         4 + 4 + 4 + 4 + self.compatible_brands.len() as u64 * 4
     }
@@ -378,7 +378,7 @@ impl Encode for FileType {
     }
 }
 
-impl Decode for FileType {
+impl Decode for FileTypeBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let major_brand = FourCC(Decode::decode(input)?);
         let minor_version = Decode::decode(input)?;
@@ -400,12 +400,12 @@ impl Decode for FileType {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct Movie {
-    pub header: MovieHeader,
-    pub tracks: Vec<Track>,
+pub struct MovieBox {
+    pub header: MovieHeaderBox,
+    pub tracks: Vec<TrackBox>,
 }
 
-impl Encode for Movie {
+impl Encode for MovieBox {
     fn size(&self) -> u64 {
         4 + 4 + self.header.size() + self.tracks.iter().map(Encode::size).sum::<u64>()
     }
@@ -422,7 +422,7 @@ impl Encode for Movie {
     }
 }
 
-impl Decode for Movie {
+impl Decode for MovieBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let mut header = None;
         let mut tracks = vec![];
@@ -442,11 +442,11 @@ impl Decode for Movie {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct MediaData {
+pub struct MediaDataBox {
     pub data: Vec<u8>,
 }
 
-impl Encode for MediaData {
+impl Encode for MediaDataBox {
     fn size(&self) -> u64 {
         4 + 4 + self.data.len() as u64
     }
@@ -460,7 +460,7 @@ impl Encode for MediaData {
     }
 }
 
-impl Decode for MediaData {
+impl Decode for MediaDataBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let data = input.to_owned();
         *input = &input[input.len()..];
@@ -473,7 +473,7 @@ impl Decode for MediaData {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct MovieHeader {
+pub struct MovieHeaderBox {
     pub creation_time: u64,
     pub modification_time: u64,
     pub timescale: u32,
@@ -484,7 +484,7 @@ pub struct MovieHeader {
     pub next_track_id: u32,
 }
 
-impl Encode for MovieHeader {
+impl Encode for MovieHeaderBox {
     fn size(&self) -> u64 {
         4 + 4 + 1 + 3 + 4 + 4 + 4 + 4 + 4 + 2 + 2 + 2 * 4 + 9 * 4 + 6 * 4 + 4
     }
@@ -515,7 +515,7 @@ impl Encode for MovieHeader {
     }
 }
 
-impl Decode for MovieHeader {
+impl Decode for MovieHeaderBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let version = input.read_u8()?;
         input.read_u24::<BigEndian>()?; // flags
@@ -570,13 +570,13 @@ impl Decode for MovieHeader {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct Track {
-    pub header: TrackHeader,
-    pub edit: Option<Edit>,
-    pub media: Media,
+pub struct TrackBox {
+    pub header: TrackHeaderBox,
+    pub edit: Option<EditBox>,
+    pub media: MediaBox,
 }
 
-impl Encode for Track {
+impl Encode for TrackBox {
     fn size(&self) -> u64 {
         4 + 4 + self.header.size() + self.edit.as_ref().map_or(0, Encode::size) + self.media.size()
     }
@@ -593,7 +593,7 @@ impl Encode for Track {
     }
 }
 
-impl Decode for Track {
+impl Decode for TrackBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let mut header = None;
         let mut edit = None;
@@ -619,7 +619,7 @@ impl Decode for Track {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct TrackHeader {
+pub struct TrackHeaderBox {
     pub creation_time: u64,
     pub modification_time: u64,
     pub track_id: u32,
@@ -632,7 +632,7 @@ pub struct TrackHeader {
     pub height: U16F16,
 }
 
-impl Encode for TrackHeader {
+impl Encode for TrackHeaderBox {
     fn size(&self) -> u64 {
         4 + 4 + 1 + 3 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 2 + 2 + 2 + 2 + 9 * 4 + 4 + 4
     }
@@ -660,7 +660,7 @@ impl Encode for TrackHeader {
     }
 }
 
-impl Decode for TrackHeader {
+impl Decode for TrackHeaderBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let version = input.read_u8()?;
         input.read_u24::<BigEndian>()?; // flags
@@ -715,13 +715,13 @@ impl Decode for TrackHeader {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct Media {
-    pub header: MediaHeader,
-    pub handler: Handler,
-    pub information: MediaInformation,
+pub struct MediaBox {
+    pub header: MediaHeaderBox,
+    pub handler: HandlerBox,
+    pub information: MediaInformationBox,
 }
 
-impl Encode for Media {
+impl Encode for MediaBox {
     fn size(&self) -> u64 {
         4 + 4 + self.header.size() + self.handler.size() + self.information.size()
     }
@@ -736,7 +736,7 @@ impl Encode for Media {
     }
 }
 
-impl Decode for Media {
+impl Decode for MediaBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let mut header = None;
         let mut handler = None;
@@ -762,7 +762,7 @@ impl Decode for Media {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct MediaHeader {
+pub struct MediaHeaderBox {
     pub creation_time: u64,
     pub modification_time: u64,
     pub timescale: u32,
@@ -770,7 +770,7 @@ pub struct MediaHeader {
     pub language: Language,
 }
 
-impl Encode for MediaHeader {
+impl Encode for MediaHeaderBox {
     fn size(&self) -> u64 {
         4 + 4 + 1 + 3 + 4 + 4 + 4 + 4 + 2 + 2
     }
@@ -790,7 +790,7 @@ impl Encode for MediaHeader {
     }
 }
 
-impl Decode for MediaHeader {
+impl Decode for MediaHeaderBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let version = input.read_u8()?;
         input.read_u24::<BigEndian>()?; // flags
@@ -831,12 +831,12 @@ impl Decode for MediaHeader {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct Handler {
+pub struct HandlerBox {
     pub r#type: FourCC,
     pub name: String,
 }
 
-impl Encode for Handler {
+impl Encode for HandlerBox {
     fn size(&self) -> u64 {
         4 + 4 + 1 + 3 + 4 + 4 + 4 + 4 + 4 + self.name.size()
     }
@@ -856,7 +856,7 @@ impl Encode for Handler {
     }
 }
 
-impl Decode for Handler {
+impl Decode for HandlerBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
@@ -876,13 +876,13 @@ impl Decode for Handler {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct MediaInformation {
+pub struct MediaInformationBox {
     pub header: MediaInformationHeader,
-    pub data_information: DataInformation,
-    pub sample_table: SampleTable,
+    pub data_information: DataInformationBox,
+    pub sample_table: SampleTableBox,
 }
 
-impl Encode for MediaInformation {
+impl Encode for MediaInformationBox {
     fn size(&self) -> u64 {
         4 + 4
             + match &self.header {
@@ -906,7 +906,7 @@ impl Encode for MediaInformation {
     }
 }
 
-impl Decode for MediaInformation {
+impl Decode for MediaInformationBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let mut video_header = None;
         let mut sound_header = None;
@@ -941,8 +941,8 @@ impl Decode for MediaInformation {
 
 #[derive(Debug)]
 pub enum MediaInformationHeader {
-    Video(VideoMediaHeader),
-    Sound(SoundMediaHeader),
+    Video(VideoMediaHeaderBox),
+    Sound(SoundMediaHeaderBox),
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -950,12 +950,12 @@ pub enum MediaInformationHeader {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct VideoMediaHeader {
+pub struct VideoMediaHeaderBox {
     pub graphicsmode: u16,
     pub opcolor: [u16; 3],
 }
 
-impl Encode for VideoMediaHeader {
+impl Encode for VideoMediaHeaderBox {
     fn size(&self) -> u64 {
         4 + 4 + 1 + 3 + 2 + 3 * 2
     }
@@ -974,7 +974,7 @@ impl Encode for VideoMediaHeader {
     }
 }
 
-impl Decode for VideoMediaHeader {
+impl Decode for VideoMediaHeaderBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
@@ -995,11 +995,11 @@ impl Decode for VideoMediaHeader {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct SoundMediaHeader {
+pub struct SoundMediaHeaderBox {
     pub balance: U8F8,
 }
 
-impl Encode for SoundMediaHeader {
+impl Encode for SoundMediaHeaderBox {
     fn size(&self) -> u64 {
         4 + 4 + 1 + 3 + 2 + 2
     }
@@ -1015,7 +1015,7 @@ impl Encode for SoundMediaHeader {
     }
 }
 
-impl Decode for SoundMediaHeader {
+impl Decode for SoundMediaHeaderBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
@@ -1031,11 +1031,11 @@ impl Decode for SoundMediaHeader {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct DataInformation {
-    pub reference: DataReference,
+pub struct DataInformationBox {
+    pub reference: DataReferenceBox,
 }
 
-impl Encode for DataInformation {
+impl Encode for DataInformationBox {
     fn size(&self) -> u64 {
         4 + 4 + self.reference.size()
     }
@@ -1048,7 +1048,7 @@ impl Encode for DataInformation {
     }
 }
 
-impl Decode for DataInformation {
+impl Decode for DataInformationBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let mut reference = None;
 
@@ -1066,17 +1066,22 @@ impl Decode for DataInformation {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub enum DataEntry {
-    Url(DataEntryUrl),
-    Urn(DataEntryUrn),
+pub struct DataReferenceBox {
+    pub entries: Vec<DataEntry>,
 }
 
 #[derive(Debug)]
-pub struct DataEntryUrl {
+pub enum DataEntry {
+    Url(DataEntryUrlBox),
+    Urn(DataEntryUrnBox),
+}
+
+#[derive(Debug)]
+pub struct DataEntryUrlBox {
     pub location: String,
 }
 
-impl Encode for DataEntryUrl {
+impl Encode for DataEntryUrlBox {
     fn size(&self) -> u64 {
         4 + 4 + 1 + 3 + self.location.size()
     }
@@ -1091,7 +1096,7 @@ impl Encode for DataEntryUrl {
     }
 }
 
-impl Decode for DataEntryUrl {
+impl Decode for DataEntryUrlBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
@@ -1103,12 +1108,12 @@ impl Decode for DataEntryUrl {
 }
 
 #[derive(Debug)]
-pub struct DataEntryUrn {
+pub struct DataEntryUrnBox {
     pub name: String,
     pub location: String,
 }
 
-impl Encode for DataEntryUrn {
+impl Encode for DataEntryUrnBox {
     fn size(&self) -> u64 {
         4 + 4 + 1 + 3 + self.name.size() + self.location.size()
     }
@@ -1124,7 +1129,7 @@ impl Encode for DataEntryUrn {
     }
 }
 
-impl Decode for DataEntryUrn {
+impl Decode for DataEntryUrnBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
@@ -1136,12 +1141,7 @@ impl Decode for DataEntryUrn {
     }
 }
 
-#[derive(Debug)]
-pub struct DataReference {
-    pub entries: Vec<DataEntry>,
-}
-
-impl Encode for DataReference {
+impl Encode for DataReferenceBox {
     fn size(&self) -> u64 {
         4 + 4
             + 1
@@ -1174,7 +1174,7 @@ impl Encode for DataReference {
     }
 }
 
-impl Decode for DataReference {
+impl Decode for DataReferenceBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
@@ -1203,20 +1203,20 @@ impl Decode for DataReference {
 
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct SampleTable {
-    pub description: SampleDescription,
-    pub time_to_sample: TimeToSample,
+pub struct SampleTableBox {
+    pub description: SampleDescriptionBox,
+    pub time_to_sample: TimeToSampleBox,
     #[derivative(Debug = "ignore")]
-    pub sample_to_chunk: SampleToChunk,
+    pub sample_to_chunk: SampleToChunkBox,
     #[derivative(Debug = "ignore")]
-    pub sample_size: SampleSize,
+    pub sample_size: SampleSizeBox,
     #[derivative(Debug = "ignore")]
-    pub chunk_offset: ChunkOffset,
-    pub sync_sample: Option<SyncSample>,
-    pub sample_to_group: Option<SampleToGroup>,
+    pub chunk_offset: ChunkOffsetBox,
+    pub sync_sample: Option<SyncSampleBox>,
+    pub sample_to_group: Option<SampleToGroupBox>,
 }
 
-impl Encode for SampleTable {
+impl Encode for SampleTableBox {
     fn size(&self) -> u64 {
         4 + 4
             + self.description.size()
@@ -1247,7 +1247,7 @@ impl Encode for SampleTable {
     }
 }
 
-impl Decode for SampleTable {
+impl Decode for SampleTableBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let mut description = None;
         let mut time_to_sample = None;
@@ -1285,7 +1285,7 @@ impl Decode for SampleTable {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct TimeToSample {
+pub struct TimeToSampleBox {
     pub entries: Vec<TimeToSampleEntry>,
 }
 
@@ -1295,7 +1295,7 @@ pub struct TimeToSampleEntry {
     pub sample_delta: u32,
 }
 
-impl Encode for TimeToSample {
+impl Encode for TimeToSampleBox {
     fn size(&self) -> u64 {
         4 + 4 + 1 + 3 + 4 + self.entries.len() as u64 * (4 + 4)
     }
@@ -1315,7 +1315,7 @@ impl Encode for TimeToSample {
     }
 }
 
-impl Decode for TimeToSample {
+impl Decode for TimeToSampleBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
@@ -1337,6 +1337,12 @@ impl Decode for TimeToSample {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
+pub struct SampleDescriptionBox {
+    pub visual: Option<VisualSampleEntry>,
+    pub audio: Option<AudioSampleEntry>,
+}
+
+#[derive(Debug)]
 pub struct VisualSampleEntry {
     pub data_reference_index: u16,
     pub width: u16,
@@ -1346,7 +1352,7 @@ pub struct VisualSampleEntry {
     pub frame_count: u16,
     pub compressorname: [u8; 32],
     pub depth: u16,
-    pub extra: Vec<u8>,
+    pub config: Vec<u8>,
 }
 
 impl Encode for VisualSampleEntry {
@@ -1366,7 +1372,7 @@ impl Encode for VisualSampleEntry {
             + 32
             + 2
             + 2
-            + self.extra.len() as u64
+            + self.config.len() as u64
     }
 
     fn encode(&self, output: &mut impl Write) -> Result<()> {
@@ -1395,7 +1401,7 @@ impl Encode for VisualSampleEntry {
         output.write_all(&self.compressorname)?;
         self.depth.encode(output)?;
         u16::MAX.encode(output)?;
-        output.write_all(&self.extra)?;
+        output.write_all(&self.config)?;
         Ok(())
     }
 }
@@ -1425,7 +1431,7 @@ impl Decode for VisualSampleEntry {
         input.read_exact(&mut compressorname)?;
         let depth = Decode::decode(input)?;
         assert_eq!(u16::decode(input)?, u16::MAX); // pre_defined
-        let extra = input.to_owned();
+        let config = input.to_owned();
         Ok(Self {
             data_reference_index,
             width,
@@ -1435,7 +1441,7 @@ impl Decode for VisualSampleEntry {
             frame_count,
             compressorname,
             depth,
-            extra,
+            config,
         })
     }
 }
@@ -1446,12 +1452,12 @@ pub struct AudioSampleEntry {
     pub channelcount: u16,
     pub samplesize: u16,
     pub samplerate: U16F16,
-    pub extra: Vec<u8>,
+    pub config: Vec<u8>,
 }
 
 impl Encode for AudioSampleEntry {
     fn size(&self) -> u64 {
-        4 + 4 + 6 * 1 + 2 + 2 * 4 + 2 + 2 + 2 + 2 + 4 + self.extra.len() as u64
+        4 + 4 + 6 * 1 + 2 + 2 * 4 + 2 + 2 + 2 + 2 + 4 + self.config.len() as u64
     }
 
     fn encode(&self, output: &mut impl Write) -> Result<()> {
@@ -1473,7 +1479,7 @@ impl Encode for AudioSampleEntry {
         0u16.encode(output)?; // pre_defined
         0u16.encode(output)?; // reserved
         self.samplerate.encode(output)?;
-        output.write_all(&self.extra)?;
+        output.write_all(&self.config)?;
         Ok(())
     }
 }
@@ -1495,31 +1501,25 @@ impl Decode for AudioSampleEntry {
         assert_eq!(u16::decode(input)?, 0); // pre_defined
         assert_eq!(u16::decode(input)?, 0); // reserved
         let samplerate = Decode::decode(input)?;
-        let extra = input.to_owned();
+        let config = input.to_owned();
         Ok(Self {
             data_reference_index,
             channelcount,
             samplesize,
             samplerate,
-            extra,
+            config,
         })
     }
 }
 
-#[derive(Debug)]
-pub struct SampleDescription {
-    pub avc1: Option<VisualSampleEntry>,
-    pub mp4a: Option<AudioSampleEntry>,
-}
-
-impl Encode for SampleDescription {
+impl Encode for SampleDescriptionBox {
     fn size(&self) -> u64 {
         4 + 4
             + 1
             + 3
             + 4
-            + self.avc1.as_ref().map_or(0, Encode::size)
-            + self.mp4a.as_ref().map_or(0, Encode::size)
+            + self.visual.as_ref().map_or(0, Encode::size)
+            + self.audio.as_ref().map_or(0, Encode::size)
     }
 
     fn encode(&self, output: &mut impl Write) -> Result<()> {
@@ -1529,33 +1529,33 @@ impl Encode for SampleDescription {
         output.write_u24::<BigEndian>(0)?; // flags
 
         1u32.encode(output)?; // entry_count
-        if let Some(avc1) = &self.avc1 {
-            avc1.encode(output)?;
+        if let Some(visual) = &self.visual {
+            visual.encode(output)?;
         }
-        if let Some(mp4a) = &self.mp4a {
-            mp4a.encode(output)?;
+        if let Some(audio) = &self.audio {
+            audio.encode(output)?;
         }
         Ok(())
     }
 }
 
-impl Decode for SampleDescription {
+impl Decode for SampleDescriptionBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
 
-        let mut avc1 = None;
-        let mut mp4a = None;
+        let mut visual = None;
+        let mut audio = None;
 
-        u32::decode(input)?;
-        // entry_count
+        assert_eq!(u32::decode(input)?, 1); // entry_count
         decode_boxes! {
             input,
-            optional avc1 avc1,
-            optional mp4a mp4a,
+            optional av01 visual,
+            optional avc1 visual,
+            optional mp4a audio,
         }
 
-        Ok(Self { avc1, mp4a })
+        Ok(Self { visual, audio })
     }
 }
 
@@ -1564,12 +1564,12 @@ impl Decode for SampleDescription {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub enum SampleSize {
+pub enum SampleSizeBox {
     Value(u32),
     PerSample(Vec<u32>),
 }
 
-impl Encode for SampleSize {
+impl Encode for SampleSizeBox {
     fn size(&self) -> u64 {
         4 + 4
             + 1
@@ -1577,8 +1577,8 @@ impl Encode for SampleSize {
             + 4
             + 4
             + match self {
-                SampleSize::Value(_) => 0,
-                SampleSize::PerSample(samples) => samples.len() as u64 * 4,
+                SampleSizeBox::Value(_) => 0,
+                SampleSizeBox::PerSample(samples) => samples.len() as u64 * 4,
             }
     }
 
@@ -1589,11 +1589,11 @@ impl Encode for SampleSize {
         output.write_u24::<BigEndian>(0)?; // flags
 
         match self {
-            SampleSize::Value(sample_size) => {
+            SampleSizeBox::Value(sample_size) => {
                 sample_size.encode(output)?;
                 0u32.encode(output)?; // sample_count
             }
-            SampleSize::PerSample(samples) => {
+            SampleSizeBox::PerSample(samples) => {
                 0u32.encode(output)?; // sample_size
                 (samples.len() as u32).encode(output)?;
                 for sample in samples {
@@ -1605,14 +1605,14 @@ impl Encode for SampleSize {
     }
 }
 
-impl Decode for SampleSize {
+impl Decode for SampleSizeBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
 
         let sample_size = Decode::decode(input)?;
         if sample_size != 0 {
-            return Ok(SampleSize::Value(sample_size));
+            return Ok(SampleSizeBox::Value(sample_size));
         }
 
         let sample_count = u32::decode(input)?;
@@ -1620,7 +1620,7 @@ impl Decode for SampleSize {
         for _ in 0..sample_count {
             samples.push(Decode::decode(input)?)
         }
-        Ok(SampleSize::PerSample(samples))
+        Ok(SampleSizeBox::PerSample(samples))
     }
 }
 
@@ -1629,7 +1629,7 @@ impl Decode for SampleSize {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct SampleToChunk {
+pub struct SampleToChunkBox {
     pub entries: Vec<SampleToChunkEntry>,
 }
 
@@ -1640,7 +1640,7 @@ pub struct SampleToChunkEntry {
     pub sample_description_index: u32,
 }
 
-impl Encode for SampleToChunk {
+impl Encode for SampleToChunkBox {
     fn size(&self) -> u64 {
         4 + 4 + 1 + 3 + 4 + self.entries.len() as u64 * (4 + 4 + 4)
     }
@@ -1661,7 +1661,7 @@ impl Encode for SampleToChunk {
     }
 }
 
-impl Decode for SampleToChunk {
+impl Decode for SampleToChunkBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
@@ -1684,11 +1684,11 @@ impl Decode for SampleToChunk {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct ChunkOffset {
+pub struct ChunkOffsetBox {
     pub entries: Vec<u32>,
 }
 
-impl Encode for ChunkOffset {
+impl Encode for ChunkOffsetBox {
     fn size(&self) -> u64 {
         4 + 4 + 1 + 3 + 4 + self.entries.len() as u64 * 4
     }
@@ -1707,7 +1707,7 @@ impl Encode for ChunkOffset {
     }
 }
 
-impl Decode for ChunkOffset {
+impl Decode for ChunkOffsetBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
@@ -1726,11 +1726,11 @@ impl Decode for ChunkOffset {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct SyncSample {
+pub struct SyncSampleBox {
     pub entries: Vec<u32>,
 }
 
-impl Encode for SyncSample {
+impl Encode for SyncSampleBox {
     fn size(&self) -> u64 {
         4 + 4 + 1 + 3 + 4 + self.entries.len() as u64 * 4
     }
@@ -1749,7 +1749,7 @@ impl Encode for SyncSample {
     }
 }
 
-impl Decode for SyncSample {
+impl Decode for SyncSampleBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
@@ -1768,11 +1768,11 @@ impl Decode for SyncSample {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct Edit {
-    edit_list: Option<EditList>,
+pub struct EditBox {
+    edit_list: Option<EditListBox>,
 }
 
-impl Encode for Edit {
+impl Encode for EditBox {
     fn size(&self) -> u64 {
         4 + 4 + self.edit_list.as_ref().map_or(0, Encode::size)
     }
@@ -1788,7 +1788,7 @@ impl Encode for Edit {
     }
 }
 
-impl Decode for Edit {
+impl Decode for EditBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let mut edit_list = None;
 
@@ -1806,7 +1806,7 @@ impl Decode for Edit {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct EditList {
+pub struct EditListBox {
     pub entries: Vec<EditListEntry>,
 }
 
@@ -1817,7 +1817,7 @@ pub struct EditListEntry {
     pub media_rate: U16F16,
 }
 
-impl Encode for EditList {
+impl Encode for EditListBox {
     fn size(&self) -> u64 {
         4 + 4 + 1 + 3 + 4 + self.entries.len() as u64 * (4 + 4 + 4)
     }
@@ -1830,15 +1830,15 @@ impl Encode for EditList {
 
         (self.entries.len() as u32).encode(output)?;
         for entry in &self.entries {
-            entry.segment_duration.encode(output)?;
-            entry.media_time.encode(output)?;
+            (entry.segment_duration as u32).encode(output)?;
+            (entry.media_time as u32).encode(output)?;
             entry.media_rate.encode(output)?;
         }
         Ok(())
     }
 }
 
-impl Decode for EditList {
+impl Decode for EditListBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let version = input.read_u8()?;
         input.read_u24::<BigEndian>()?; // flags
@@ -1874,7 +1874,7 @@ impl Decode for EditList {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct SampleToGroup {
+pub struct SampleToGroupBox {
     pub grouping_type: FourCC,
     pub entries: Vec<SampleToGroupEntry>,
 }
@@ -1885,7 +1885,7 @@ pub struct SampleToGroupEntry {
     pub group_description_index: u32,
 }
 
-impl Encode for SampleToGroup {
+impl Encode for SampleToGroupBox {
     fn size(&self) -> u64 {
         4 + 4 + 1 + 3 + 4 + 4 + self.entries.len() as u64 * (4 + 4)
     }
@@ -1906,7 +1906,7 @@ impl Encode for SampleToGroup {
     }
 }
 
-impl Decode for SampleToGroup {
+impl Decode for SampleToGroupBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
