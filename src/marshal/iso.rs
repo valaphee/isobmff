@@ -1,220 +1,19 @@
 use std::{
-    fmt::{Debug, Formatter},
+    fmt::Debug,
     io::{Read, Seek, SeekFrom, Write},
-    str::FromStr,
 };
 
 use bstringify::bstringify;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use derivative::Derivative;
-use fixed::types::{U16F16, U2F30, U8F8};
-use fixed_macro::types::{U16F16, U2F30, U8F8};
+use fixed::types::{U16F16, U8F8};
+use fixed_macro::types::{U16F16, U8F8};
 use thiserror::Error;
 
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("IO error")]
-    Io(#[from] std::io::Error),
+use crate::marshal::{av1::AV1SampleEntry, Decode, Encode, FourCC, Matrix, Result};
 
-    #[error("Invalid {r#type} box quantity: {quantity}, expected: {expected}")]
-    InvalidBoxQuantity {
-        r#type: &'static str,
-        quantity: usize,
-        expected: usize,
-    },
-}
-
-pub type Result<T> = std::result::Result<T, Error>;
-
-pub trait Encode {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()>;
-}
-
-pub trait Decode: Sized {
-    fn decode(input: &mut &[u8]) -> Result<Self>;
-}
-
-impl Encode for u16 {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        output.write_u16::<BigEndian>(*self)?;
-        Ok(())
-    }
-}
-
-impl Decode for u16 {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        Ok(input.read_u16::<BigEndian>()?)
-    }
-}
-
-impl Encode for U8F8 {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        output.write_u16::<BigEndian>(self.to_bits())?;
-        Ok(())
-    }
-}
-
-impl Decode for U8F8 {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        Ok(Self::from_bits(input.read_u16::<BigEndian>()?))
-    }
-}
-
-impl Encode for u32 {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        output.write_u32::<BigEndian>(*self)?;
-        Ok(())
-    }
-}
-
-impl Decode for u32 {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        Ok(input.read_u32::<BigEndian>()?)
-    }
-}
-
-impl Encode for U16F16 {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        output.write_u32::<BigEndian>(self.to_bits())?;
-        Ok(())
-    }
-}
-
-impl Decode for U16F16 {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        Ok(Self::from_bits(input.read_u32::<BigEndian>()?))
-    }
-}
-
-impl Encode for U2F30 {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        output.write_u32::<BigEndian>(self.to_bits())?;
-        Ok(())
-    }
-}
-
-impl Decode for U2F30 {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        Ok(Self::from_bits(input.read_u32::<BigEndian>()?))
-    }
-}
-
-impl Encode for u64 {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        output.write_u64::<BigEndian>(*self)?;
-        Ok(())
-    }
-}
-
-impl Decode for u64 {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        Ok(input.read_u64::<BigEndian>()?)
-    }
-}
-
-impl Encode for String {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        output.write_all(self.as_bytes())?;
-        output.write_u8(0)?;
-        Ok(())
-    }
-}
-
-impl Decode for String {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        let length = input.iter().position(|&c| c == 0).unwrap();
-        let (data, remaining_data) = input.split_at(length);
-        *input = remaining_data;
-        Ok(String::from_utf8(data.to_owned()).unwrap())
-    }
-}
-
-pub struct FourCC(u32);
-
-impl Debug for FourCC {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(std::str::from_utf8(&self.0.to_be_bytes()).unwrap())
-    }
-}
-
-impl FromStr for FourCC {
-    type Err = ();
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        Ok(Self(u32::from_be_bytes(s.as_bytes().try_into().unwrap())))
-    }
-}
-
-pub struct Language(pub u16);
-
-impl Debug for Language {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let bytes = self.0.to_be_bytes();
-        let c0 = (bytes[0] >> 2 & 0x1F) + 0x60;
-        let c1 = (((bytes[0] & 0x3) << 3) | (bytes[1] >> 5)) + 0x60;
-        let c2 = (bytes[1] & 0x1F) + 0x60;
-        f.write_str(std::str::from_utf8(&[c0, c1, c2]).unwrap())
-    }
-}
-
-#[derive(Debug)]
-pub struct Matrix {
-    pub a: U16F16,
-    pub b: U16F16,
-    pub u: U2F30,
-    pub c: U16F16,
-    pub d: U16F16,
-    pub v: U2F30,
-    pub x: U16F16,
-    pub y: U16F16,
-    pub w: U2F30,
-}
-
-impl Matrix {
-    pub fn identity() -> Self {
-        Self {
-            a: U16F16!(1),
-            b: U16F16!(0),
-            u: U2F30!(0),
-            c: U16F16!(0),
-            d: U16F16!(1),
-            v: U2F30!(0),
-            x: U16F16!(0),
-            y: U16F16!(0),
-            w: U2F30!(1),
-        }
-    }
-}
-
-impl Encode for Matrix {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        self.a.encode(output)?;
-        self.b.encode(output)?;
-        self.u.encode(output)?;
-        self.c.encode(output)?;
-        self.d.encode(output)?;
-        self.v.encode(output)?;
-        self.x.encode(output)?;
-        self.y.encode(output)?;
-        self.w.encode(output)
-    }
-}
-
-impl Decode for Matrix {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        Ok(Self {
-            a: Decode::decode(input)?,
-            b: Decode::decode(input)?,
-            u: Decode::decode(input)?,
-            c: Decode::decode(input)?,
-            d: Decode::decode(input)?,
-            v: Decode::decode(input)?,
-            x: Decode::decode(input)?,
-            y: Decode::decode(input)?,
-            w: Decode::decode(input)?,
-        })
-    }
-}
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2008
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 pub fn encode_box_header(output: &mut (impl Write + Seek), r#type: [u8; 4]) -> Result<u64> {
     let begin = output.stream_position()?;
@@ -297,15 +96,9 @@ macro_rules! unwrap_box {
     (multiple $type:ident $name:ident) => {};
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2008
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Derivative)]
-#[derivative(Debug)]
+#[derive(Debug)]
 pub struct File {
     pub file_type: FileTypeBox,
-    #[derivative(Debug = "ignore")]
     pub media_data: Vec<MediaDataBox>,
     pub movie: MovieBox,
 }
@@ -779,7 +572,7 @@ pub struct MediaHeaderBox {
     pub modification_time: u64,
     pub timescale: u32,
     pub duration: u64,
-    pub language: Language,
+    pub language: u16,
 }
 
 impl Default for MediaHeaderBox {
@@ -789,7 +582,7 @@ impl Default for MediaHeaderBox {
             modification_time: 0,
             timescale: 0,
             duration: 0,
-            language: Language(0),
+            language: 0,
         }
     }
 }
@@ -804,7 +597,7 @@ impl Encode for MediaHeaderBox {
         (self.modification_time as u32).encode(output)?;
         self.timescale.encode(output)?;
         (self.duration as u32).encode(output)?;
-        self.language.0.encode(output)?;
+        self.language.encode(output)?;
         0u16.encode(output)?; // pre_defined
 
         update_box_header(output, begin)
@@ -835,7 +628,7 @@ impl Decode for MediaHeaderBox {
             }
             _ => panic!(),
         }
-        let language = Language(Decode::decode(input)?);
+        let language = Decode::decode(input)?;
         assert_eq!(u16::decode(input)?, 0); // pre_defined
         Ok(Self {
             creation_time,
@@ -1110,9 +903,8 @@ impl Decode for SampleTableBox {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct SampleDescriptionBox {
-    pub visual: Option<VisualSampleEntry>,
-    pub audio: Option<AudioSampleEntry>,
+pub enum SampleDescriptionBox {
+    AV1(AV1SampleEntry),
 }
 
 #[derive(Debug)]
@@ -1125,13 +917,10 @@ pub struct VisualSampleEntry {
     pub frame_count: u16,
     pub compressorname: [u8; 32],
     pub depth: u16,
-    pub config: Vec<u8>,
 }
 
 impl Encode for VisualSampleEntry {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        let begin = encode_box_header(output, *b"av01")?;
-
         output.write_u8(0)?; // reserved
         output.write_u8(0)?; // reserved
         output.write_u8(0)?; // reserved
@@ -1153,10 +942,7 @@ impl Encode for VisualSampleEntry {
         self.frame_count.encode(output)?;
         output.write_all(&self.compressorname)?;
         self.depth.encode(output)?;
-        u16::MAX.encode(output)?; // pre_defined
-        output.write_all(&self.config)?;
-
-        update_box_header(output, begin)
+        u16::MAX.encode(output) // pre_defined
     }
 }
 
@@ -1185,7 +971,6 @@ impl Decode for VisualSampleEntry {
         input.read_exact(&mut compressorname)?;
         let depth = Decode::decode(input)?;
         assert_eq!(u16::decode(input)?, u16::MAX); // pre_defined
-        let config = input.to_owned();
         Ok(Self {
             data_reference_index,
             width,
@@ -1195,7 +980,6 @@ impl Decode for VisualSampleEntry {
             frame_count,
             compressorname,
             depth,
-            config,
         })
     }
 }
@@ -1206,13 +990,10 @@ pub struct AudioSampleEntry {
     pub channelcount: u16,
     pub samplesize: u16,
     pub samplerate: U16F16,
-    pub config: Vec<u8>,
 }
 
 impl Encode for AudioSampleEntry {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        let begin = encode_box_header(output, *b"mp4a")?;
-
         output.write_u8(0)?; // reserved
         output.write_u8(0)?; // reserved
         output.write_u8(0)?; // reserved
@@ -1227,10 +1008,7 @@ impl Encode for AudioSampleEntry {
         self.samplesize.encode(output)?;
         0u16.encode(output)?; // pre_defined
         0u16.encode(output)?; // reserved
-        self.samplerate.encode(output)?;
-        output.write_all(&self.config)?;
-
-        update_box_header(output, begin)
+        self.samplerate.encode(output)
     }
 }
 
@@ -1251,13 +1029,11 @@ impl Decode for AudioSampleEntry {
         assert_eq!(u16::decode(input)?, 0); // pre_defined
         assert_eq!(u16::decode(input)?, 0); // reserved
         let samplerate = Decode::decode(input)?;
-        let config = input.to_owned();
         Ok(Self {
             data_reference_index,
             channelcount,
             samplesize,
             samplerate,
-            config,
         })
     }
 }
@@ -1269,12 +1045,6 @@ impl Encode for SampleDescriptionBox {
         output.write_u24::<BigEndian>(0)?; // flags
 
         1u32.encode(output)?; // entry_count
-        if let Some(visual) = &self.visual {
-            visual.encode(output)?;
-        }
-        if let Some(audio) = &self.audio {
-            audio.encode(output)?;
-        }
 
         update_box_header(output, begin)
     }
@@ -1285,18 +1055,20 @@ impl Decode for SampleDescriptionBox {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
 
-        let mut visual = None;
-        let mut audio = None;
+        let mut entry = None;
 
-        assert_eq!(u32::decode(input)?, 1); // entry_count
-        decode_boxes! {
-            input,
-            optional av01 visual,
-            optional avc1 visual,
-            optional mp4a audio,
+        assert_eq!(u32::decode(input)?, 0); // entry_count
+        let size = u32::decode(input)?;
+        let r#type: [u8; 4] = u32::decode(input)?.to_be_bytes();
+
+        let (mut data, remaining_data) = input.split_at((size - 4 - 4) as usize);
+        match &r#type {
+            b"av01" => entry = Some(SampleDescriptionBox::AV1(Decode::decode(&mut data)?)),
+            _ => {}
         }
+        *input = remaining_data;
 
-        Ok(Self { visual, audio })
+        Ok(entry.unwrap())
     }
 }
 
