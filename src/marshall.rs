@@ -1,9 +1,8 @@
 use std::{
     fmt::{Debug, Formatter},
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
+    str::FromStr,
 };
-use std::io::{Seek, SeekFrom};
-use std::str::FromStr;
 
 use bstringify::bstringify;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -391,7 +390,7 @@ impl Decode for FileTypeBox {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct MediaDataBox(Vec<u8>);
+pub struct MediaDataBox(pub Vec<u8>);
 
 impl Encode for MediaDataBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
@@ -609,6 +608,9 @@ impl Decode for TrackBox {
 
 #[derive(Debug)]
 pub struct TrackHeaderBox {
+    pub enabled: bool,
+    pub in_movie: bool,
+    pub in_preview: bool,
     pub creation_time: u64,
     pub modification_time: u64,
     pub track_id: u32,
@@ -624,6 +626,9 @@ pub struct TrackHeaderBox {
 impl Default for TrackHeaderBox {
     fn default() -> Self {
         Self {
+            enabled: true,
+            in_movie: true,
+            in_preview: true,
             creation_time: 0,
             modification_time: 0,
             track_id: 1,
@@ -642,7 +647,11 @@ impl Encode for TrackHeaderBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         let begin = encode_box_header(output, *b"tkhd")?;
         output.write_u8(0)?; // version
-        output.write_u24::<BigEndian>(0)?; // flags
+        output.write_u24::<BigEndian>(
+            if self.enabled { 1 << 0 } else { 0 }
+                | if self.in_movie { 1 << 1 } else { 0 }
+                | if self.in_preview { 1 << 2 } else { 0 },
+        )?;
 
         (self.creation_time as u32).encode(output)?;
         (self.modification_time as u32).encode(output)?;
@@ -666,7 +675,7 @@ impl Encode for TrackHeaderBox {
 impl Decode for TrackHeaderBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let version = input.read_u8()?;
-        input.read_u24::<BigEndian>()?; // flags
+        let flags = input.read_u24::<BigEndian>()?;
 
         let creation_time;
         let modification_time;
@@ -699,6 +708,9 @@ impl Decode for TrackHeaderBox {
         let width = Decode::decode(input)?;
         let height = Decode::decode(input)?;
         Ok(Self {
+            enabled: flags & 1 << 0 != 0,
+            in_movie: flags & 1 << 1 != 0,
+            in_preview: flags & 1 << 2 != 0,
             creation_time,
             modification_time,
             track_id,
@@ -965,7 +977,7 @@ impl Encode for VideoMediaHeaderBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         let begin = encode_box_header(output, *b"vmhd")?;
         output.write_u8(0)?; // version
-        output.write_u24::<BigEndian>(0)?; // flags
+        output.write_u24::<BigEndian>(1)?; // flags
 
         self.graphicsmode.encode(output)?;
         for value in self.opcolor {
@@ -1037,7 +1049,6 @@ pub struct SampleTableBox {
     pub sample_size: SampleSizeBox,
     pub sample_to_chunk: SampleToChunkBox,
     pub chunk_offset: ChunkOffsetBox,
-
     pub sample_to_group: Option<SampleToGroupBox>,
 }
 
@@ -1294,7 +1305,7 @@ impl Decode for SampleDescriptionBox {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct TimeToSampleBox(Vec<TimeToSampleEntry>);
+pub struct TimeToSampleBox(pub Vec<TimeToSampleEntry>);
 
 #[derive(Debug)]
 pub struct TimeToSampleEntry {
@@ -1340,7 +1351,7 @@ impl Decode for TimeToSampleBox {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct SyncSampleBox(Vec<u32>);
+pub struct SyncSampleBox(pub Vec<u32>);
 
 impl Encode for SyncSampleBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
@@ -1377,7 +1388,7 @@ impl Decode for SyncSampleBox {
 
 #[derive(Debug)]
 pub struct EditBox {
-    edit_list: Option<EditListBox>,
+    pub edit_list: Option<EditListBox>,
 }
 
 impl Encode for EditBox {
@@ -1410,9 +1421,7 @@ impl Decode for EditBox {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct EditListBox {
-    pub entries: Vec<EditListEntry>,
-}
+pub struct EditListBox(pub Vec<EditListEntry>);
 
 #[derive(Debug)]
 pub struct EditListEntry {
@@ -1427,8 +1436,8 @@ impl Encode for EditListBox {
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
-        (self.entries.len() as u32).encode(output)?;
-        for entry in &self.entries {
+        (self.0.len() as u32).encode(output)?;
+        for entry in &self.0 {
             (entry.segment_duration as u32).encode(output)?;
             (entry.media_time as u32).encode(output)?;
             entry.media_rate.encode(output)?;
@@ -1465,7 +1474,7 @@ impl Decode for EditListBox {
                 media_rate: Decode::decode(input)?,
             })
         }
-        Ok(Self { entries })
+        Ok(Self(entries))
     }
 }
 
@@ -1473,7 +1482,7 @@ impl Decode for EditListBox {
 // ISO/IEC 14496-12:2008 8.7.1
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DataInformationBox {
     pub reference: DataReferenceBox,
 }
@@ -1481,9 +1490,7 @@ pub struct DataInformationBox {
 impl Default for DataInformationBox {
     fn default() -> Self {
         Self {
-            reference: DataReferenceBox(vec![
-                DataEntry::Url(DataEntryUrlBox(None))
-            ]),
+            reference: DataReferenceBox(vec![DataEntry::Url(DataEntryUrlBox(None))]),
         }
     }
 }
@@ -1516,35 +1523,28 @@ impl Decode for DataInformationBox {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct DataReferenceBox(Vec<DataEntry>);
+pub struct DataReferenceBox(pub Vec<DataEntry>);
 
 impl Default for DataReferenceBox {
     fn default() -> Self {
-        Self(vec![
-            DataEntry::default()
-        ])
+        Self(vec![DataEntry::Url(Default::default())])
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub enum DataEntry {
-    #[default]
     Url(DataEntryUrlBox),
     Urn(DataEntryUrnBox),
 }
 
 #[derive(Debug, Default)]
-pub struct DataEntryUrlBox(Option<String>);
+pub struct DataEntryUrlBox(pub Option<String>);
 
 impl Encode for DataEntryUrlBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         let begin = encode_box_header(output, *b"url ")?;
         output.write_u8(0)?; // version
-        output.write_u24::<BigEndian>(if self.0.is_none() {
-            1 << 0
-        } else {
-            0
-        })?; // flags
+        output.write_u24::<BigEndian>(if self.0.is_none() { 1 << 0 } else { 0 })?; // flags
 
         if let Some(location) = &self.0 {
             location.encode(output)?;
@@ -1559,7 +1559,7 @@ impl Decode for DataEntryUrlBox {
         assert_eq!(input.read_u8()?, 0); // version
         let flags = input.read_u24::<BigEndian>()?; // flags
 
-        Ok(Self(if flags & (1 << 0) {
+        Ok(Self(if flags & 1 << 0 != 0 {
             Some(Decode::decode(input)?)
         } else {
             None
@@ -1568,7 +1568,7 @@ impl Decode for DataEntryUrlBox {
 }
 
 #[derive(Debug)]
-pub struct DataEntryUrnBox(String, String);
+pub struct DataEntryUrnBox(pub String, pub String);
 
 impl Encode for DataEntryUrnBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
@@ -1639,10 +1639,7 @@ impl Decode for DataReferenceBox {
 
 #[derive(Debug)]
 pub enum SampleSizeBox {
-    Value {
-        sample_size: u32,
-        sample_count: u32,
-    },
+    Value { sample_size: u32, sample_count: u32 },
     PerSample(Vec<u32>),
 }
 
@@ -1653,7 +1650,10 @@ impl Encode for SampleSizeBox {
         output.write_u24::<BigEndian>(0)?; // flags
 
         match self {
-            SampleSizeBox::Value { sample_size, sample_count } => {
+            SampleSizeBox::Value {
+                sample_size,
+                sample_count,
+            } => {
                 sample_size.encode(output)?;
                 sample_count.encode(output)?;
             }
@@ -1678,7 +1678,10 @@ impl Decode for SampleSizeBox {
         let sample_size = Decode::decode(input)?;
         let sample_count = Decode::decode(input)?;
         if sample_size != 0 {
-            return Ok(SampleSizeBox::Value { sample_size, sample_count });
+            return Ok(SampleSizeBox::Value {
+                sample_size,
+                sample_count,
+            });
         }
 
         let mut samples = Vec::default();
@@ -1694,7 +1697,7 @@ impl Decode for SampleSizeBox {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct SampleToChunkBox(Vec<SampleToChunkEntry>);
+pub struct SampleToChunkBox(pub Vec<SampleToChunkEntry>);
 
 #[derive(Debug)]
 pub struct SampleToChunkEntry {
@@ -1743,7 +1746,7 @@ impl Decode for SampleToChunkBox {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct ChunkOffsetBox(Vec<u32>);
+pub struct ChunkOffsetBox(pub Vec<u32>);
 
 impl Encode for ChunkOffsetBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
@@ -1779,7 +1782,7 @@ impl Decode for ChunkOffsetBox {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct SampleToGroupBox(FourCC, Vec<SampleToGroupEntry>);
+pub struct SampleToGroupBox(pub FourCC, pub Vec<SampleToGroupEntry>);
 
 #[derive(Debug)]
 pub struct SampleToGroupEntry {
@@ -1793,7 +1796,7 @@ impl Encode for SampleToGroupBox {
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
-        self.0.0.encode(output)?;
+        self.0 .0.encode(output)?;
         (self.1.len() as u32).encode(output)?;
         for entry in &self.1 {
             entry.sample_count.encode(output)?;
