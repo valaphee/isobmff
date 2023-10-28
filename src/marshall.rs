@@ -9,7 +9,7 @@ use bstringify::bstringify;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use derivative::Derivative;
 use fixed::types::{U16F16, U2F30, U8F8};
-use fixed_macro::types::{U16F16, U2F30};
+use fixed_macro::types::{U16F16, U2F30, U8F8};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -115,17 +115,15 @@ impl Decode for u64 {
 
 impl Encode for String {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        if !self.is_empty() {
-            output.write_all(self.as_bytes())?;
-            output.write_u8(0)?;
-        }
+        output.write_all(self.as_bytes())?;
+        output.write_u8(0)?;
         Ok(())
     }
 }
 
 impl Decode for String {
     fn decode(input: &mut &[u8]) -> Result<Self> {
-        let length = input.iter().position(|&c| c == 0).unwrap_or(0);
+        let length = input.iter().position(|&c| c == 0).unwrap();
         let (data, remaining_data) = input.split_at(length);
         *input = remaining_data;
         Ok(String::from_utf8(data.to_owned()).unwrap())
@@ -301,16 +299,16 @@ macro_rules! unwrap_box {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005
+// ISO/IEC 14496-12:2008
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct File {
     pub file_type: FileTypeBox,
-    pub movie: MovieBox,
     #[derivative(Debug = "ignore")]
     pub media_data: Vec<MediaDataBox>,
+    pub movie: MovieBox,
 }
 
 impl Encode for File {
@@ -328,26 +326,26 @@ impl Encode for File {
 impl Decode for File {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let mut file_type = None;
-        let mut movie = None;
         let mut media_data = vec![];
+        let mut movie = None;
 
         decode_boxes! {
             input,
             required ftyp file_type,
-            required moov movie,
             multiple mdat media_data,
+            required moov movie,
         }
 
         Ok(Self {
             file_type,
-            movie,
             media_data,
+            movie,
         })
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 4.3
+// ISO/IEC 14496-12:2008 4.3
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
@@ -389,7 +387,31 @@ impl Decode for FileTypeBox {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.1
+// ISO/IEC 14496-12:2008 8.1.1
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug)]
+pub struct MediaDataBox(Vec<u8>);
+
+impl Encode for MediaDataBox {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"mdat")?;
+
+        output.write(&self.0)?;
+
+        update_box_header(output, begin)
+    }
+}
+
+impl Decode for MediaDataBox {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        let data = input.to_owned();
+        *input = &input[input.len()..];
+        Ok(Self(data))
+    }
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2008 8.2.1
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
@@ -427,34 +449,7 @@ impl Decode for MovieBox {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.2
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Debug)]
-pub struct MediaDataBox {
-    pub data: Vec<u8>,
-}
-
-impl Encode for MediaDataBox {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        let begin = encode_box_header(output, *b"mdat")?;
-
-        output.write(&self.data)?;
-
-        update_box_header(output, begin)
-    }
-}
-
-impl Decode for MediaDataBox {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        let data = input.to_owned();
-        *input = &input[input.len()..];
-        Ok(Self { data })
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.3
+// ISO/IEC 14496-12:2008 8.2.2
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
@@ -467,6 +462,21 @@ pub struct MovieHeaderBox {
     pub volume: U8F8,
     pub matrix: Matrix,
     pub next_track_id: u32,
+}
+
+impl Default for MovieHeaderBox {
+    fn default() -> Self {
+        Self {
+            creation_time: 0,
+            modification_time: 0,
+            timescale: 0,
+            duration: 0,
+            rate: U16F16!(1),
+            volume: U8F8!(1),
+            matrix: Matrix::identity(),
+            next_track_id: 0,
+        }
+    }
 }
 
 impl Encode for MovieHeaderBox {
@@ -548,14 +558,14 @@ impl Decode for MovieHeaderBox {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.4
+// ISO/IEC 14496-12:2008 8.3.1
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
 pub struct TrackBox {
     pub header: TrackHeaderBox,
-    pub edit: Option<EditBox>,
     pub media: MediaBox,
+    pub edit: Option<EditBox>,
 }
 
 impl Encode for TrackBox {
@@ -563,10 +573,10 @@ impl Encode for TrackBox {
         let begin = encode_box_header(output, *b"trak")?;
 
         self.header.encode(output)?;
+        self.media.encode(output)?;
         if let Some(edit) = &self.edit {
             edit.encode(output)?;
         }
-        self.media.encode(output)?;
 
         update_box_header(output, begin)
     }
@@ -581,8 +591,8 @@ impl Decode for TrackBox {
         decode_boxes! {
             input,
             required tkhd header,
-            optional edts edit,
             required mdia media,
+            optional edts edit,
         }
 
         Ok(Self {
@@ -594,7 +604,7 @@ impl Decode for TrackBox {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.5
+// ISO/IEC 14496-12:2008 8.3.2
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
@@ -609,6 +619,23 @@ pub struct TrackHeaderBox {
     pub matrix: Matrix,
     pub width: U16F16,
     pub height: U16F16,
+}
+
+impl Default for TrackHeaderBox {
+    fn default() -> Self {
+        Self {
+            creation_time: 0,
+            modification_time: 0,
+            track_id: 1,
+            duration: 0,
+            layer: 0,
+            alternate_group: 0,
+            volume: U8F8!(1),
+            matrix: Matrix::identity(),
+            width: U16F16!(0),
+            height: U16F16!(0),
+        }
+    }
 }
 
 impl Encode for TrackHeaderBox {
@@ -687,7 +714,7 @@ impl Decode for TrackHeaderBox {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.7
+// ISO/IEC 14496-12:2008 8.4.1
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
@@ -731,7 +758,7 @@ impl Decode for MediaBox {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.8
+// ISO/IEC 14496-12:2008 8.4.2
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
@@ -741,6 +768,18 @@ pub struct MediaHeaderBox {
     pub timescale: u32,
     pub duration: u64,
     pub language: Language,
+}
+
+impl Default for MediaHeaderBox {
+    fn default() -> Self {
+        Self {
+            creation_time: 0,
+            modification_time: 0,
+            timescale: 0,
+            duration: 0,
+            language: Language(0),
+        }
+    }
 }
 
 impl Encode for MediaHeaderBox {
@@ -797,7 +836,7 @@ impl Decode for MediaHeaderBox {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.9
+// ISO/IEC 14496-12:2008 8.4.3
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
@@ -839,7 +878,7 @@ impl Decode for HandlerBox {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.10
+// ISO/IEC 14496-12:2008 8.4.4
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
@@ -894,7 +933,7 @@ impl Decode for MediaInformationBox {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.11
+// ISO/IEC 14496-12:2008 8.4.5
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
@@ -904,13 +943,22 @@ pub enum MediaInformationHeader {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.11.2
+// ISO/IEC 14496-12:2008 8.4.5.2
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
 pub struct VideoMediaHeaderBox {
     pub graphicsmode: u16,
     pub opcolor: [u16; 3],
+}
+
+impl Default for VideoMediaHeaderBox {
+    fn default() -> Self {
+        Self {
+            graphicsmode: 0,
+            opcolor: [0, 0, 0],
+        }
+    }
 }
 
 impl Encode for VideoMediaHeaderBox {
@@ -945,7 +993,7 @@ impl Decode for VideoMediaHeaderBox {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.11.3
+// ISO/IEC 14496-12:2008 8.4.5.3
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
@@ -978,164 +1026,18 @@ impl Decode for SoundMediaHeaderBox {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.12
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Debug)]
-pub struct DataInformationBox {
-    pub reference: DataReferenceBox,
-}
-
-impl Encode for DataInformationBox {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        let begin = encode_box_header(output, *b"dinf")?;
-
-        self.reference.encode(output)?;
-
-        update_box_header(output, begin)
-    }
-}
-
-impl Decode for DataInformationBox {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        let mut reference = None;
-
-        decode_boxes! {
-            input,
-            required dref reference,
-        }
-
-        Ok(Self { reference })
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.13
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Debug)]
-pub struct DataReferenceBox {
-    pub entries: Vec<DataEntry>,
-}
-
-#[derive(Debug)]
-pub enum DataEntry {
-    Url(DataEntryUrlBox),
-    Urn(DataEntryUrnBox),
-}
-
-#[derive(Debug)]
-pub struct DataEntryUrlBox {
-    pub location: String,
-}
-
-impl Encode for DataEntryUrlBox {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        let begin = encode_box_header(output, *b"url ")?;
-        output.write_u8(0)?; // version
-        output.write_u24::<BigEndian>(0)?; // flags
-
-        self.location.encode(output)?;
-
-        update_box_header(output, begin)
-    }
-}
-
-impl Decode for DataEntryUrlBox {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        assert_eq!(input.read_u8()?, 0); // version
-        input.read_u24::<BigEndian>()?; // flags
-
-        Ok(Self {
-            location: Decode::decode(input)?,
-        })
-    }
-}
-
-#[derive(Debug)]
-pub struct DataEntryUrnBox {
-    pub name: String,
-    pub location: String,
-}
-
-impl Encode for DataEntryUrnBox {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        let begin = encode_box_header(output, *b"urn ")?;
-        output.write_u8(0)?; // version
-        output.write_u24::<BigEndian>(0)?; // flags
-
-        self.name.encode(output)?;
-        self.location.encode(output)?;
-
-        update_box_header(output, begin)
-    }
-}
-
-impl Decode for DataEntryUrnBox {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        assert_eq!(input.read_u8()?, 0); // version
-        input.read_u24::<BigEndian>()?; // flags
-
-        Ok(Self {
-            name: Decode::decode(input)?,
-            location: Decode::decode(input)?,
-        })
-    }
-}
-
-impl Encode for DataReferenceBox {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        let begin = encode_box_header(output, *b"dref")?;
-        output.write_u8(0)?; // version
-        output.write_u24::<BigEndian>(0)?; // flags
-
-        (self.entries.len() as u32).encode(output)?;
-        for entry in &self.entries {
-            match entry {
-                DataEntry::Url(entry) => entry.encode(output),
-                DataEntry::Urn(entry) => entry.encode(output),
-            }?;
-        }
-
-        update_box_header(output, begin)
-    }
-}
-
-impl Decode for DataReferenceBox {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        assert_eq!(input.read_u8()?, 0); // version
-        input.read_u24::<BigEndian>()?; // flags
-
-        let entry_count = u32::decode(input)?;
-        let mut entries = Vec::default();
-        for _ in 0..entry_count {
-            let size = u32::decode(input)?;
-            let r#type: [u8; 4] = u32::decode(input)?.to_be_bytes();
-
-            let (mut data, remaining_data) = input.split_at((size - 4 - 4) as usize);
-            match &r#type {
-                b"url " => entries.push(DataEntry::Url(Decode::decode(&mut data)?)),
-                b"urn " => entries.push(DataEntry::Urn(Decode::decode(&mut data)?)),
-                _ => {}
-            }
-            *input = remaining_data;
-        }
-        Ok(Self { entries })
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.14
+// ISO/IEC 14496-12:2008 8.5.1
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
 pub struct SampleTableBox {
     pub description: SampleDescriptionBox,
     pub time_to_sample: TimeToSampleBox,
-    pub sample_to_chunk: SampleToChunkBox,
-    pub sample_size: SampleSizeBox,
-    pub chunk_offset: ChunkOffsetBox,
     pub sync_sample: Option<SyncSampleBox>,
+    pub sample_size: SampleSizeBox,
+    pub sample_to_chunk: SampleToChunkBox,
+    pub chunk_offset: ChunkOffsetBox,
+
     pub sample_to_group: Option<SampleToGroupBox>,
 }
 
@@ -1145,12 +1047,12 @@ impl Encode for SampleTableBox {
 
         self.description.encode(output)?;
         self.time_to_sample.encode(output)?;
-        self.sample_to_chunk.encode(output)?;
-        self.sample_size.encode(output)?;
-        self.chunk_offset.encode(output)?;
         if let Some(sync_sample) = &self.sync_sample {
             sync_sample.encode(output)?;
         }
+        self.sample_size.encode(output)?;
+        self.sample_to_chunk.encode(output)?;
+        self.chunk_offset.encode(output)?;
         if let Some(sample_to_group) = &self.sample_to_group {
             sample_to_group.encode(output)?;
         }
@@ -1163,85 +1065,37 @@ impl Decode for SampleTableBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let mut description = None;
         let mut time_to_sample = None;
-        let mut sample_to_chunk = None;
-        let mut sample_size = None;
-        let mut chunk_offset = None;
         let mut sync_sample = None;
+        let mut sample_size = None;
+        let mut sample_to_chunk = None;
+        let mut chunk_offset = None;
         let mut sample_to_group = None;
 
         decode_boxes! {
             input,
             required stsd description,
             required stts time_to_sample,
-            required stsc sample_to_chunk,
-            required stsz sample_size,
-            required stco chunk_offset,
             optional stss sync_sample,
+            required stsz sample_size,
+            required stsc sample_to_chunk,
+            required stco chunk_offset,
             optional sbgp sample_to_group,
         }
 
         Ok(Self {
             description,
             time_to_sample,
-            sample_to_chunk,
-            sample_size,
-            chunk_offset,
             sync_sample,
+            sample_size,
+            sample_to_chunk,
+            chunk_offset,
             sample_to_group,
         })
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.15.2
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Debug)]
-pub struct TimeToSampleBox {
-    pub entries: Vec<TimeToSampleEntry>,
-}
-
-#[derive(Debug)]
-pub struct TimeToSampleEntry {
-    pub sample_count: u32,
-    pub sample_delta: u32,
-}
-
-impl Encode for TimeToSampleBox {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        let begin = encode_box_header(output, *b"stts")?;
-        output.write_u8(0)?; // version
-        output.write_u24::<BigEndian>(0)?; // flags
-
-        (self.entries.len() as u32).encode(output)?;
-        for entry in &self.entries {
-            entry.sample_count.encode(output)?;
-            entry.sample_delta.encode(output)?;
-        }
-
-        update_box_header(output, begin)
-    }
-}
-
-impl Decode for TimeToSampleBox {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        assert_eq!(input.read_u8()?, 0); // version
-        input.read_u24::<BigEndian>()?; // flags
-
-        let entry_count = u32::decode(input)?;
-        let mut entries = Vec::default();
-        for _ in 0..entry_count {
-            entries.push(TimeToSampleEntry {
-                sample_count: Decode::decode(input)?,
-                sample_delta: Decode::decode(input)?,
-            });
-        }
-        Ok(Self { entries })
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.16
+// ISO/IEC 14496-12:2008 8.5.2
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
@@ -1288,7 +1142,7 @@ impl Encode for VisualSampleEntry {
         self.frame_count.encode(output)?;
         output.write_all(&self.compressorname)?;
         self.depth.encode(output)?;
-        u16::MAX.encode(output)?;
+        u16::MAX.encode(output)?; // pre_defined
         output.write_all(&self.config)?;
 
         update_box_header(output, begin)
@@ -1436,92 +1290,35 @@ impl Decode for SampleDescriptionBox {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.17
+// ISO/IEC 14496-12:2008 8.6.1.2
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub enum SampleSizeBox {
-    Value(u32),
-    PerSample(Vec<u32>),
+pub struct TimeToSampleBox(Vec<TimeToSampleEntry>);
+
+#[derive(Debug)]
+pub struct TimeToSampleEntry {
+    pub sample_count: u32,
+    pub sample_delta: u32,
 }
 
-impl Encode for SampleSizeBox {
+impl Encode for TimeToSampleBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        let begin = encode_box_header(output, *b"stsz")?;
+        let begin = encode_box_header(output, *b"stts")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
-        match self {
-            SampleSizeBox::Value(sample_size) => {
-                sample_size.encode(output)?;
-                0u32.encode(output)?; // sample_count
-            }
-            SampleSizeBox::PerSample(samples) => {
-                0u32.encode(output)?; // sample_size
-                (samples.len() as u32).encode(output)?;
-                for sample in samples {
-                    sample.encode(output)?;
-                }
-            }
+        (self.0.len() as u32).encode(output)?;
+        for entry in &self.0 {
+            entry.sample_count.encode(output)?;
+            entry.sample_delta.encode(output)?;
         }
 
         update_box_header(output, begin)
     }
 }
 
-impl Decode for SampleSizeBox {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        assert_eq!(input.read_u8()?, 0); // version
-        input.read_u24::<BigEndian>()?; // flags
-
-        let sample_size = Decode::decode(input)?;
-        if sample_size != 0 {
-            return Ok(SampleSizeBox::Value(sample_size));
-        }
-
-        let sample_count = u32::decode(input)?;
-        let mut samples = Vec::default();
-        for _ in 0..sample_count {
-            samples.push(Decode::decode(input)?)
-        }
-        Ok(SampleSizeBox::PerSample(samples))
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.18
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Debug)]
-pub struct SampleToChunkBox {
-    pub entries: Vec<SampleToChunkEntry>,
-}
-
-#[derive(Debug)]
-pub struct SampleToChunkEntry {
-    pub first_chunk: u32,
-    pub samples_per_chunk: u32,
-    pub sample_description_index: u32,
-}
-
-impl Encode for SampleToChunkBox {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        let begin = encode_box_header(output, *b"stsc")?;
-        output.write_u8(0)?; // version
-        output.write_u24::<BigEndian>(0)?; // flags
-
-        (self.entries.len() as u32).encode(output)?;
-        for entry in &self.entries {
-            entry.first_chunk.encode(output)?;
-            entry.samples_per_chunk.encode(output)?;
-            entry.sample_description_index.encode(output)?;
-        }
-
-        update_box_header(output, begin)
-    }
-}
-
-impl Decode for SampleToChunkBox {
+impl Decode for TimeToSampleBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
@@ -1529,62 +1326,21 @@ impl Decode for SampleToChunkBox {
         let entry_count = u32::decode(input)?;
         let mut entries = Vec::default();
         for _ in 0..entry_count {
-            entries.push(SampleToChunkEntry {
-                first_chunk: Decode::decode(input)?,
-                samples_per_chunk: Decode::decode(input)?,
-                sample_description_index: Decode::decode(input)?,
-            })
+            entries.push(TimeToSampleEntry {
+                sample_count: Decode::decode(input)?,
+                sample_delta: Decode::decode(input)?,
+            });
         }
-        Ok(Self { entries })
+        Ok(Self(entries))
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.19
+// ISO/IEC 14496-12:2008 8.6.2
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct ChunkOffsetBox {
-    pub entries: Vec<u32>,
-}
-
-impl Encode for ChunkOffsetBox {
-    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        let begin = encode_box_header(output, *b"stco")?;
-        output.write_u8(0)?; // version
-        output.write_u24::<BigEndian>(0)?; // flags
-
-        (self.entries.len() as u32).encode(output)?;
-        for entry in &self.entries {
-            entry.encode(output)?;
-        }
-
-        update_box_header(output, begin)
-    }
-}
-
-impl Decode for ChunkOffsetBox {
-    fn decode(input: &mut &[u8]) -> Result<Self> {
-        assert_eq!(input.read_u8()?, 0); // version
-        input.read_u24::<BigEndian>()?; // flags
-
-        let entry_count = u32::decode(input)?;
-        let mut entries = Vec::default();
-        for _ in 0..entry_count {
-            entries.push(Decode::decode(input)?)
-        }
-        Ok(Self { entries })
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.20
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Debug)]
-pub struct SyncSampleBox {
-    pub entries: Vec<u32>,
-}
+pub struct SyncSampleBox(Vec<u32>);
 
 impl Encode for SyncSampleBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
@@ -1592,8 +1348,8 @@ impl Encode for SyncSampleBox {
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
-        (self.entries.len() as u32).encode(output)?;
-        for entry in &self.entries {
+        (self.0.len() as u32).encode(output)?;
+        for entry in &self.0 {
             entry.encode(output)?;
         }
 
@@ -1611,12 +1367,12 @@ impl Decode for SyncSampleBox {
         for _ in 0..entry_count {
             entries.push(Decode::decode(input)?)
         }
-        Ok(Self { entries })
+        Ok(Self(entries))
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.25
+// ISO/IEC 14496-12:2008 8.6.5
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
@@ -1650,7 +1406,7 @@ impl Decode for EditBox {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.26
+// ISO/IEC 14496-12:2008 8.6.6
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
@@ -1714,14 +1470,316 @@ impl Decode for EditListBox {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// ISO/IEC 14496-12:2005 8.40.3.2
+// ISO/IEC 14496-12:2008 8.7.1
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug, Default)]
+pub struct DataInformationBox {
+    pub reference: DataReferenceBox,
+}
+
+impl Default for DataInformationBox {
+    fn default() -> Self {
+        Self {
+            reference: DataReferenceBox(vec![
+                DataEntry::Url(DataEntryUrlBox(None))
+            ]),
+        }
+    }
+}
+
+impl Encode for DataInformationBox {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"dinf")?;
+
+        self.reference.encode(output)?;
+
+        update_box_header(output, begin)
+    }
+}
+
+impl Decode for DataInformationBox {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        let mut reference = None;
+
+        decode_boxes! {
+            input,
+            required dref reference,
+        }
+
+        Ok(Self { reference })
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2008 8.7.2
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct SampleToGroupBox {
-    pub grouping_type: FourCC,
-    pub entries: Vec<SampleToGroupEntry>,
+pub struct DataReferenceBox(Vec<DataEntry>);
+
+impl Default for DataReferenceBox {
+    fn default() -> Self {
+        Self(vec![
+            DataEntry::default()
+        ])
+    }
 }
+
+#[derive(Debug, Default)]
+pub enum DataEntry {
+    #[default]
+    Url(DataEntryUrlBox),
+    Urn(DataEntryUrnBox),
+}
+
+#[derive(Debug, Default)]
+pub struct DataEntryUrlBox(Option<String>);
+
+impl Encode for DataEntryUrlBox {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"url ")?;
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(if self.0.is_none() {
+            1 << 0
+        } else {
+            0
+        })?; // flags
+
+        if let Some(location) = &self.0 {
+            location.encode(output)?;
+        }
+
+        update_box_header(output, begin)
+    }
+}
+
+impl Decode for DataEntryUrlBox {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        assert_eq!(input.read_u8()?, 0); // version
+        let flags = input.read_u24::<BigEndian>()?; // flags
+
+        Ok(Self(if flags & (1 << 0) {
+            Some(Decode::decode(input)?)
+        } else {
+            None
+        }))
+    }
+}
+
+#[derive(Debug)]
+pub struct DataEntryUrnBox(String, String);
+
+impl Encode for DataEntryUrnBox {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"urn ")?;
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        self.0.encode(output)?;
+        self.1.encode(output)?;
+
+        update_box_header(output, begin)
+    }
+}
+
+impl Decode for DataEntryUrnBox {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
+
+        Ok(Self(Decode::decode(input)?, Decode::decode(input)?))
+    }
+}
+
+impl Encode for DataReferenceBox {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"dref")?;
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        (self.0.len() as u32).encode(output)?;
+        for entry in &self.0 {
+            match entry {
+                DataEntry::Url(entry) => entry.encode(output),
+                DataEntry::Urn(entry) => entry.encode(output),
+            }?;
+        }
+
+        update_box_header(output, begin)
+    }
+}
+
+impl Decode for DataReferenceBox {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
+
+        let entry_count = u32::decode(input)?;
+        let mut entries = Vec::default();
+        for _ in 0..entry_count {
+            let size = u32::decode(input)?;
+            let r#type: [u8; 4] = u32::decode(input)?.to_be_bytes();
+
+            let (mut data, remaining_data) = input.split_at((size - 4 - 4) as usize);
+            match &r#type {
+                b"url " => entries.push(DataEntry::Url(Decode::decode(&mut data)?)),
+                b"urn " => entries.push(DataEntry::Urn(Decode::decode(&mut data)?)),
+                _ => {}
+            }
+            *input = remaining_data;
+        }
+        Ok(Self(entries))
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2008 8.7.3
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug)]
+pub enum SampleSizeBox {
+    Value {
+        sample_size: u32,
+        sample_count: u32,
+    },
+    PerSample(Vec<u32>),
+}
+
+impl Encode for SampleSizeBox {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"stsz")?;
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        match self {
+            SampleSizeBox::Value { sample_size, sample_count } => {
+                sample_size.encode(output)?;
+                sample_count.encode(output)?;
+            }
+            SampleSizeBox::PerSample(samples) => {
+                0u32.encode(output)?; // sample_size
+                (samples.len() as u32).encode(output)?;
+                for sample in samples {
+                    sample.encode(output)?;
+                }
+            }
+        }
+
+        update_box_header(output, begin)
+    }
+}
+
+impl Decode for SampleSizeBox {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
+
+        let sample_size = Decode::decode(input)?;
+        let sample_count = Decode::decode(input)?;
+        if sample_size != 0 {
+            return Ok(SampleSizeBox::Value { sample_size, sample_count });
+        }
+
+        let mut samples = Vec::default();
+        for _ in 0..sample_count {
+            samples.push(Decode::decode(input)?)
+        }
+        Ok(SampleSizeBox::PerSample(samples))
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2008 8.7.4
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug)]
+pub struct SampleToChunkBox(Vec<SampleToChunkEntry>);
+
+#[derive(Debug)]
+pub struct SampleToChunkEntry {
+    pub first_chunk: u32,
+    pub samples_per_chunk: u32,
+    pub sample_description_index: u32,
+}
+
+impl Encode for SampleToChunkBox {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"stsc")?;
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        (self.0.len() as u32).encode(output)?;
+        for entry in &self.0 {
+            entry.first_chunk.encode(output)?;
+            entry.samples_per_chunk.encode(output)?;
+            entry.sample_description_index.encode(output)?;
+        }
+
+        update_box_header(output, begin)
+    }
+}
+
+impl Decode for SampleToChunkBox {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
+
+        let entry_count = u32::decode(input)?;
+        let mut entries = Vec::default();
+        for _ in 0..entry_count {
+            entries.push(SampleToChunkEntry {
+                first_chunk: Decode::decode(input)?,
+                samples_per_chunk: Decode::decode(input)?,
+                sample_description_index: Decode::decode(input)?,
+            })
+        }
+        Ok(Self(entries))
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2008 8.7.5
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug)]
+pub struct ChunkOffsetBox(Vec<u32>);
+
+impl Encode for ChunkOffsetBox {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"stco")?;
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        (self.0.len() as u32).encode(output)?;
+        for entry in &self.0 {
+            entry.encode(output)?;
+        }
+
+        update_box_header(output, begin)
+    }
+}
+
+impl Decode for ChunkOffsetBox {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
+
+        let entry_count = u32::decode(input)?;
+        let mut entries = Vec::default();
+        for _ in 0..entry_count {
+            entries.push(Decode::decode(input)?)
+        }
+        Ok(Self(entries))
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2008 8.9.2
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug)]
+pub struct SampleToGroupBox(FourCC, Vec<SampleToGroupEntry>);
 
 #[derive(Debug)]
 pub struct SampleToGroupEntry {
@@ -1735,9 +1793,9 @@ impl Encode for SampleToGroupBox {
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
-        self.grouping_type.0.encode(output)?;
-        (self.entries.len() as u32).encode(output)?;
-        for entry in &self.entries {
+        self.0.0.encode(output)?;
+        (self.1.len() as u32).encode(output)?;
+        for entry in &self.1 {
             entry.sample_count.encode(output)?;
             entry.group_description_index.encode(output)?;
         }
@@ -1760,9 +1818,6 @@ impl Decode for SampleToGroupBox {
                 group_description_index: Decode::decode(input)?,
             })
         }
-        Ok(Self {
-            grouping_type,
-            entries,
-        })
+        Ok(Self(grouping_type, entries))
     }
 }

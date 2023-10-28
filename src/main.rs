@@ -22,11 +22,11 @@ struct Mp4Writer<W> {
     chunk_duration: u32,
     sample_id: u32,
 
-    sample_sizes: Vec<u32>,
     time_to_sample: Vec<TimeToSampleEntry>,
+    sync_samples: Vec<u32>,
+    sample_sizes: Vec<u32>,
     sample_to_chunk: Vec<SampleToChunkEntry>,
     chunk_offsets: Vec<u32>,
-    sync_samples: Vec<u32>,
     duration: u32,
 }
 
@@ -45,9 +45,7 @@ impl<W: Write + Seek> Mp4Writer<W> {
         8u32.encode(&mut writer).unwrap(); // size
         u32::from_be_bytes(*b"free").encode(&mut writer).unwrap(); // type
         let media_data_start = writer.stream_position().unwrap();
-        MediaDataBox {
-            data: vec![],
-        }.encode(&mut writer).unwrap();
+        MediaDataBox(vec![]).encode(&mut writer).unwrap();
         Self {
             writer,
             media_data_start,
@@ -127,72 +125,28 @@ impl<W: Write + Seek> Mp4Writer<W> {
         self.writer.seek(SeekFrom::Start(media_data_end)).unwrap();
         MovieBox {
             header: MovieHeaderBox {
-                creation_time: 0,
-                modification_time: 0,
                 timescale: 1000,
                 duration: self.duration as u64,
-                rate: U16F16!(1),
-                volume: U8F8!(1),
-                matrix: Matrix {
-                    a: U16F16!(1),
-                    b: U16F16!(0),
-                    u: U2F30!(0),
-                    c: U16F16!(0),
-                    d: U16F16!(1),
-                    v: U2F30!(0),
-                    x: U16F16!(0),
-                    y: U16F16!(0),
-                    w: U2F30!(1),
-                },
                 next_track_id: 2,
+                ..Default::default()
             },
             tracks: vec![TrackBox {
                 header: TrackHeaderBox {
-                    creation_time: 0,
-                    modification_time: 0,
-                    track_id: 1,
                     duration: self.duration as u64,
-                    layer: 0,
-                    alternate_group: 0,
-                    volume: U8F8!(0),
-                    matrix: Matrix {
-                        a: U16F16!(1),
-                        b: U16F16!(0),
-                        u: U2F30!(0),
-                        c: U16F16!(0),
-                        d: U16F16!(1),
-                        v: U2F30!(0),
-                        x: U16F16!(0),
-                        y: U16F16!(0),
-                        w: U2F30!(1),
-                    },
                     width: U16F16!(1920),
                     height: U16F16!(1080),
+                    ..Default::default()
                 },
-                edit: None,
                 media: MediaBox {
                     header: MediaHeaderBox {
-                        creation_time: 0,
-                        modification_time: 0,
                         timescale: 1000,
                         duration: self.duration as u64,
-                        language: Language(0),
+                        ..Default::default()
                     },
                     handler: HandlerBox { r#type: "vide".parse().unwrap(), name: "VideoHandler".to_string() },
                     information: MediaInformationBox {
-                        header: MediaInformationHeader::Video(VideoMediaHeaderBox {
-                            graphicsmode: 0,
-                            opcolor: [0, 0, 0],
-                        }),
-                        data_information: DataInformationBox {
-                            reference: DataReferenceBox {
-                                entries: vec![
-                                    DataEntry::Url(DataEntryUrlBox {
-                                        location: "".to_string(),
-                                    })
-                                ]
-                            }
-                        },
+                        header: MediaInformationHeader::Video(Default::default()),
+                        data_information: Default::default(),
                         sample_table: SampleTableBox {
                             description: SampleDescriptionBox { visual: Some(VisualSampleEntry {
                                 data_reference_index: 1,
@@ -239,15 +193,16 @@ impl<W: Write + Seek> Mp4Writer<W> {
                                     128,
                                 ],
                             }), audio: None },
-                            time_to_sample: TimeToSampleBox { entries: self.time_to_sample },
-                            sample_to_chunk: SampleToChunkBox { entries: self.sample_to_chunk },
+                            time_to_sample: TimeToSampleBox(self.time_to_sample),
+                            sync_sample: Some(SyncSampleBox(self.sync_samples)),
                             sample_size: SampleSizeBox::PerSample(self.sample_sizes),
-                            chunk_offset: ChunkOffsetBox { entries: self.chunk_offsets },
-                            sync_sample: Some(SyncSampleBox { entries: self.sync_samples }),
+                            sample_to_chunk: SampleToChunkBox(self.sample_to_chunk),
+                            chunk_offset: ChunkOffsetBox(self.chunk_offsets),
                             sample_to_group: None,
                         },
                     },
                 },
+                edit: None,
             }],
         }.encode(&mut self.writer).unwrap();
         self.writer
