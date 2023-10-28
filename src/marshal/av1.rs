@@ -1,10 +1,11 @@
 use std::io::{Seek, Write};
 
 use crate::marshal::{
-    iso::{encode_box_header, update_box_header, VisualSampleEntry},
-    Decode, Encode, Result,
+    Decode,
+    Encode, mp4::{encode_box_header, update_box_header, VisualSampleEntry}, Result,
 };
 
+#[derive(Debug)]
 pub struct AV1SampleEntry {
     pub base: VisualSampleEntry,
 }

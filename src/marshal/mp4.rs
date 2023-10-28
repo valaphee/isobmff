@@ -7,9 +7,8 @@ use bstringify::bstringify;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use fixed::types::{U16F16, U8F8};
 use fixed_macro::types::{U16F16, U8F8};
-use thiserror::Error;
 
-use crate::marshal::{av1::AV1SampleEntry, Decode, Encode, FourCC, Matrix, Result};
+use crate::marshal::{av1::AV1SampleEntry, Decode, Encode, Error, FourCC, Matrix, Result};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // ISO/IEC 14496-12:2008
@@ -189,7 +188,7 @@ impl Encode for MediaDataBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         let begin = encode_box_header(output, *b"mdat")?;
 
-        output.write(&self.0)?;
+        output.write_all(&self.0)?;
 
         update_box_header(output, begin)
     }
@@ -566,25 +565,13 @@ impl Decode for MediaBox {
 // ISO/IEC 14496-12:2008 8.4.2
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct MediaHeaderBox {
     pub creation_time: u64,
     pub modification_time: u64,
     pub timescale: u32,
     pub duration: u64,
     pub language: u16,
-}
-
-impl Default for MediaHeaderBox {
-    fn default() -> Self {
-        Self {
-            creation_time: 0,
-            modification_time: 0,
-            timescale: 0,
-            duration: 0,
-            language: 0,
-        }
-    }
 }
 
 impl Encode for MediaHeaderBox {
@@ -751,19 +738,10 @@ pub enum MediaInformationHeader {
 // ISO/IEC 14496-12:2008 8.4.5.2
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct VideoMediaHeaderBox {
     pub graphicsmode: u16,
     pub opcolor: [u16; 3],
-}
-
-impl Default for VideoMediaHeaderBox {
-    fn default() -> Self {
-        Self {
-            graphicsmode: 0,
-            opcolor: [0, 0, 0],
-        }
-    }
 }
 
 impl Encode for VideoMediaHeaderBox {
@@ -1568,7 +1546,7 @@ impl Encode for SampleToGroupBox {
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
-        self.0 .0.encode(output)?;
+        self.0.0.encode(output)?;
         (self.1.len() as u32).encode(output)?;
         for entry in &self.1 {
             entry.sample_count.encode(output)?;
