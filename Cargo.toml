@@ -14,7 +14,7 @@ fixed-macro = "1.2.0"
 memmap2 = "0.9.0"
 thiserror = "1.0.50"
 
-rav1e = { version = "0.6.6", features = ["unstable", "channel-api"] }
+rav1e = { git = "https://github.com/xiph/rav1e.git", features = ["unstable", "channel-api"] }
 windows = { version = "0.51.1", features = [
     "Win32_Foundation",
     "Win32_UI_Input_KeyboardAndMouse",

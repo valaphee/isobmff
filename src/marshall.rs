@@ -2,12 +2,14 @@ use std::{
     fmt::{Debug, Formatter},
     io::{Read, Write},
 };
+use std::io::{Seek, SeekFrom};
 use std::str::FromStr;
 
 use bstringify::bstringify;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use derivative::Derivative;
 use fixed::types::{U16F16, U2F30, U8F8};
+use fixed_macro::types::{U16F16, U2F30};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -26,9 +28,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub trait Encode {
-    fn size(&self) -> u64;
-
-    fn encode(&self, output: &mut impl Write) -> Result<()>;
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()>;
 }
 
 pub trait Decode: Sized {
@@ -36,11 +36,7 @@ pub trait Decode: Sized {
 }
 
 impl Encode for u16 {
-    fn size(&self) -> u64 {
-        2
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         output.write_u16::<BigEndian>(*self)?;
         Ok(())
     }
@@ -53,11 +49,7 @@ impl Decode for u16 {
 }
 
 impl Encode for U8F8 {
-    fn size(&self) -> u64 {
-        2
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         output.write_u16::<BigEndian>(self.to_bits())?;
         Ok(())
     }
@@ -70,11 +62,7 @@ impl Decode for U8F8 {
 }
 
 impl Encode for u32 {
-    fn size(&self) -> u64 {
-        4
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         output.write_u32::<BigEndian>(*self)?;
         Ok(())
     }
@@ -87,11 +75,7 @@ impl Decode for u32 {
 }
 
 impl Encode for U16F16 {
-    fn size(&self) -> u64 {
-        4
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         output.write_u32::<BigEndian>(self.to_bits())?;
         Ok(())
     }
@@ -104,11 +88,7 @@ impl Decode for U16F16 {
 }
 
 impl Encode for U2F30 {
-    fn size(&self) -> u64 {
-        4
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         output.write_u32::<BigEndian>(self.to_bits())?;
         Ok(())
     }
@@ -121,11 +101,7 @@ impl Decode for U2F30 {
 }
 
 impl Encode for u64 {
-    fn size(&self) -> u64 {
-        8
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         output.write_u64::<BigEndian>(*self)?;
         Ok(())
     }
@@ -138,15 +114,7 @@ impl Decode for u64 {
 }
 
 impl Encode for String {
-    fn size(&self) -> u64 {
-        if self.is_empty() {
-            0
-        } else {
-            self.as_bytes().len() as u64 + 1
-        }
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         if !self.is_empty() {
             output.write_all(self.as_bytes())?;
             output.write_u8(0)?;
@@ -205,12 +173,24 @@ pub struct Matrix {
     pub w: U2F30,
 }
 
-impl Encode for Matrix {
-    fn size(&self) -> u64 {
-        9 * 4
+impl Matrix {
+    pub fn identity() -> Self {
+        Self {
+            a: U16F16!(1),
+            b: U16F16!(0),
+            u: U2F30!(0),
+            c: U16F16!(0),
+            d: U16F16!(1),
+            v: U2F30!(0),
+            x: U16F16!(0),
+            y: U16F16!(0),
+            w: U2F30!(1),
+        }
     }
+}
 
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
+impl Encode for Matrix {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         self.a.encode(output)?;
         self.b.encode(output)?;
         self.u.encode(output)?;
@@ -237,6 +217,22 @@ impl Decode for Matrix {
             w: Decode::decode(input)?,
         })
     }
+}
+
+pub fn encode_box_header(output: &mut (impl Write + Seek), r#type: [u8; 4]) -> Result<u64> {
+    let begin = output.stream_position()?;
+    0u32.encode(output)?; // size
+    output.write_all(&r#type)?;
+    Ok(begin)
+}
+
+pub fn update_box_header(output: &mut (impl Write + Seek), begin: u64) -> Result<()> {
+    let end = output.stream_position()?;
+    let size = end - begin;
+    output.seek(SeekFrom::Start(begin))?;
+    (size as u32).encode(output)?;
+    output.seek(SeekFrom::Start(end))?;
+    Ok(())
 }
 
 macro_rules! decode_boxes {(
@@ -318,15 +314,7 @@ pub struct File {
 }
 
 impl Encode for File {
-    fn size(&self) -> u64 {
-        self.file_type.size()
-            + 4
-            + 4
-            + self.media_data.iter().map(Encode::size).sum::<u64>()
-            + self.movie.size()
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         self.file_type.encode(output)?;
         8u32.encode(output)?; // size
         u32::from_be_bytes(*b"free").encode(output)?; // type
@@ -370,20 +358,16 @@ pub struct FileTypeBox {
 }
 
 impl Encode for FileTypeBox {
-    fn size(&self) -> u64 {
-        4 + 4 + 4 + 4 + self.compatible_brands.len() as u64 * 4
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"ftyp").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"ftyp")?;
 
         self.major_brand.0.encode(output)?;
         self.minor_version.encode(output)?;
         for compatible_brand in &self.compatible_brands {
             compatible_brand.0.encode(output)?;
         }
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 
@@ -415,19 +399,15 @@ pub struct MovieBox {
 }
 
 impl Encode for MovieBox {
-    fn size(&self) -> u64 {
-        4 + 4 + self.header.size() + self.tracks.iter().map(Encode::size).sum::<u64>()
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"moov").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"moov")?;
 
         self.header.encode(output)?;
         for track in &self.tracks {
             track.encode(output)?;
         }
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 
@@ -456,16 +436,12 @@ pub struct MediaDataBox {
 }
 
 impl Encode for MediaDataBox {
-    fn size(&self) -> u64 {
-        4 + 4 + self.data.len() as u64
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"mdat").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"mdat")?;
 
         output.write(&self.data)?;
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 
@@ -494,13 +470,8 @@ pub struct MovieHeaderBox {
 }
 
 impl Encode for MovieHeaderBox {
-    fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + 4 + 4 + 4 + 4 + 4 + 2 + 2 + 2 * 4 + 9 * 4 + 6 * 4 + 4
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"mvhd").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"mvhd")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
@@ -514,13 +485,15 @@ impl Encode for MovieHeaderBox {
         0u32.encode(output)?; // reserved
         0u32.encode(output)?; // reserved
         self.matrix.encode(output)?;
-        0u32.encode(output)?; // reserved
-        0u32.encode(output)?; // reserved
-        0u32.encode(output)?; // reserved
-        0u32.encode(output)?; // reserved
-        0u32.encode(output)?; // reserved
-        0u32.encode(output)?; // reserved
-        self.next_track_id.encode(output)
+        0u32.encode(output)?; // pre_defined
+        0u32.encode(output)?; // pre_defined
+        0u32.encode(output)?; // pre_defined
+        0u32.encode(output)?; // pre_defined
+        0u32.encode(output)?; // pre_defined
+        0u32.encode(output)?; // pre_defined
+        self.next_track_id.encode(output)?;
+
+        update_box_header(output, begin)
     }
 }
 
@@ -586,19 +559,16 @@ pub struct TrackBox {
 }
 
 impl Encode for TrackBox {
-    fn size(&self) -> u64 {
-        4 + 4 + self.header.size() + self.edit.as_ref().map_or(0, Encode::size) + self.media.size()
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"trak").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"trak")?;
 
         self.header.encode(output)?;
         if let Some(edit) = &self.edit {
             edit.encode(output)?;
         }
-        self.media.encode(output)
+        self.media.encode(output)?;
+
+        update_box_header(output, begin)
     }
 }
 
@@ -642,13 +612,8 @@ pub struct TrackHeaderBox {
 }
 
 impl Encode for TrackHeaderBox {
-    fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 2 + 2 + 2 + 2 + 9 * 4 + 4 + 4
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"tkhd").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"tkhd")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
@@ -665,7 +630,9 @@ impl Encode for TrackHeaderBox {
         0u16.encode(output)?; // reserved
         self.matrix.encode(output)?;
         self.width.encode(output)?;
-        self.height.encode(output)
+        self.height.encode(output)?;
+
+        update_box_header(output, begin)
     }
 }
 
@@ -731,17 +698,14 @@ pub struct MediaBox {
 }
 
 impl Encode for MediaBox {
-    fn size(&self) -> u64 {
-        4 + 4 + self.header.size() + self.handler.size() + self.information.size()
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"mdia").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"mdia")?;
 
         self.header.encode(output)?;
         self.handler.encode(output)?;
-        self.information.encode(output)
+        self.information.encode(output)?;
+
+        update_box_header(output, begin)
     }
 }
 
@@ -780,13 +744,8 @@ pub struct MediaHeaderBox {
 }
 
 impl Encode for MediaHeaderBox {
-    fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + 4 + 4 + 4 + 4 + 2 + 2
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"mdhd").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"mdhd")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
@@ -795,7 +754,9 @@ impl Encode for MediaHeaderBox {
         self.timescale.encode(output)?;
         (self.duration as u32).encode(output)?;
         self.language.0.encode(output)?;
-        0u16.encode(output) // pre_defined
+        0u16.encode(output)?; // pre_defined
+
+        update_box_header(output, begin)
     }
 }
 
@@ -846,13 +807,8 @@ pub struct HandlerBox {
 }
 
 impl Encode for HandlerBox {
-    fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + 4 + 4 + 4 + 4 + 4 + self.name.size()
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"hdlr").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"hdlr")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
@@ -861,7 +817,9 @@ impl Encode for HandlerBox {
         0u32.encode(output)?; // reserved
         0u32.encode(output)?; // reserved
         0u32.encode(output)?; // reserved
-        self.name.encode(output)
+        self.name.encode(output)?;
+
+        update_box_header(output, begin)
     }
 }
 
@@ -892,26 +850,17 @@ pub struct MediaInformationBox {
 }
 
 impl Encode for MediaInformationBox {
-    fn size(&self) -> u64 {
-        4 + 4
-            + match &self.header {
-                MediaInformationHeader::Video(header) => header.size(),
-                MediaInformationHeader::Sound(header) => header.size(),
-            }
-            + self.data_information.size()
-            + self.sample_table.size()
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"minf").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"minf")?;
 
         match &self.header {
             MediaInformationHeader::Video(header) => header.encode(output),
             MediaInformationHeader::Sound(header) => header.encode(output),
         }?;
         self.data_information.encode(output)?;
-        self.sample_table.encode(output)
+        self.sample_table.encode(output)?;
+
+        update_box_header(output, begin)
     }
 }
 
@@ -965,13 +914,8 @@ pub struct VideoMediaHeaderBox {
 }
 
 impl Encode for VideoMediaHeaderBox {
-    fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + 2 + 3 * 2
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"vmhd").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"vmhd")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
@@ -979,7 +923,8 @@ impl Encode for VideoMediaHeaderBox {
         for value in self.opcolor {
             value.encode(output)?;
         }
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 
@@ -1009,18 +954,15 @@ pub struct SoundMediaHeaderBox {
 }
 
 impl Encode for SoundMediaHeaderBox {
-    fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + 2 + 2
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"smhd").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"smhd")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
         self.balance.encode(output)?;
-        0u16.encode(output) // reserved
+        0u16.encode(output)?; // reserved
+
+        update_box_header(output, begin)
     }
 }
 
@@ -1045,15 +987,12 @@ pub struct DataInformationBox {
 }
 
 impl Encode for DataInformationBox {
-    fn size(&self) -> u64 {
-        4 + 4 + self.reference.size()
-    }
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"dinf")?;
 
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"dinf").encode(output)?; // type
+        self.reference.encode(output)?;
 
-        self.reference.encode(output)
+        update_box_header(output, begin)
     }
 }
 
@@ -1091,17 +1030,14 @@ pub struct DataEntryUrlBox {
 }
 
 impl Encode for DataEntryUrlBox {
-    fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + self.location.size()
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"url ").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"url ")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
-        self.location.encode(output)
+        self.location.encode(output)?;
+
+        update_box_header(output, begin)
     }
 }
 
@@ -1123,18 +1059,15 @@ pub struct DataEntryUrnBox {
 }
 
 impl Encode for DataEntryUrnBox {
-    fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + self.name.size() + self.location.size()
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"urn ").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"urn ")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
         self.name.encode(output)?;
-        self.location.encode(output)
+        self.location.encode(output)?;
+
+        update_box_header(output, begin)
     }
 }
 
@@ -1151,24 +1084,8 @@ impl Decode for DataEntryUrnBox {
 }
 
 impl Encode for DataReferenceBox {
-    fn size(&self) -> u64 {
-        4 + 4
-            + 1
-            + 3
-            + 4
-            + self
-                .entries
-                .iter()
-                .map(|entry| match entry {
-                    DataEntry::Url(entry) => entry.size(),
-                    DataEntry::Urn(entry) => entry.size(),
-                })
-                .sum::<u64>()
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"dref").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"dref")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
@@ -1179,7 +1096,8 @@ impl Encode for DataReferenceBox {
                 DataEntry::Urn(entry) => entry.encode(output),
             }?;
         }
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 
@@ -1222,20 +1140,8 @@ pub struct SampleTableBox {
 }
 
 impl Encode for SampleTableBox {
-    fn size(&self) -> u64 {
-        4 + 4
-            + self.description.size()
-            + self.time_to_sample.size()
-            + self.sample_to_chunk.size()
-            + self.sample_size.size()
-            + self.chunk_offset.size()
-            + self.sync_sample.as_ref().map_or(0, Encode::size)
-            + self.sample_to_group.as_ref().map_or(0, Encode::size)
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"stbl").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"stbl")?;
 
         self.description.encode(output)?;
         self.time_to_sample.encode(output)?;
@@ -1248,7 +1154,8 @@ impl Encode for SampleTableBox {
         if let Some(sample_to_group) = &self.sample_to_group {
             sample_to_group.encode(output)?;
         }
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 
@@ -1301,13 +1208,8 @@ pub struct TimeToSampleEntry {
 }
 
 impl Encode for TimeToSampleBox {
-    fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + 4 + self.entries.len() as u64 * (4 + 4)
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"stts").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"stts")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
@@ -1316,7 +1218,8 @@ impl Encode for TimeToSampleBox {
             entry.sample_count.encode(output)?;
             entry.sample_delta.encode(output)?;
         }
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 
@@ -1361,28 +1264,8 @@ pub struct VisualSampleEntry {
 }
 
 impl Encode for VisualSampleEntry {
-    fn size(&self) -> u64 {
-        4 + 4
-            + 6 * 1
-            + 2
-            + 2
-            + 2
-            + 3 * 4
-            + 2
-            + 2
-            + 4
-            + 4
-            + 4
-            + 2
-            + 32
-            + 2
-            + 2
-            + self.config.len() as u64
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"av01").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"av01")?;
 
         output.write_u8(0)?; // reserved
         output.write_u8(0)?; // reserved
@@ -1407,7 +1290,8 @@ impl Encode for VisualSampleEntry {
         self.depth.encode(output)?;
         u16::MAX.encode(output)?;
         output.write_all(&self.config)?;
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 
@@ -1461,13 +1345,8 @@ pub struct AudioSampleEntry {
 }
 
 impl Encode for AudioSampleEntry {
-    fn size(&self) -> u64 {
-        4 + 4 + 6 * 1 + 2 + 2 * 4 + 2 + 2 + 2 + 2 + 4 + self.config.len() as u64
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"mp4a").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"mp4a")?;
 
         output.write_u8(0)?; // reserved
         output.write_u8(0)?; // reserved
@@ -1485,7 +1364,8 @@ impl Encode for AudioSampleEntry {
         0u16.encode(output)?; // reserved
         self.samplerate.encode(output)?;
         output.write_all(&self.config)?;
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 
@@ -1518,18 +1398,8 @@ impl Decode for AudioSampleEntry {
 }
 
 impl Encode for SampleDescriptionBox {
-    fn size(&self) -> u64 {
-        4 + 4
-            + 1
-            + 3
-            + 4
-            + self.visual.as_ref().map_or(0, Encode::size)
-            + self.audio.as_ref().map_or(0, Encode::size)
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"stsd").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"stsd")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
@@ -1540,7 +1410,8 @@ impl Encode for SampleDescriptionBox {
         if let Some(audio) = &self.audio {
             audio.encode(output)?;
         }
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 
@@ -1575,21 +1446,8 @@ pub enum SampleSizeBox {
 }
 
 impl Encode for SampleSizeBox {
-    fn size(&self) -> u64 {
-        4 + 4
-            + 1
-            + 3
-            + 4
-            + 4
-            + match self {
-                SampleSizeBox::Value(_) => 0,
-                SampleSizeBox::PerSample(samples) => samples.len() as u64 * 4,
-            }
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"stsz").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"stsz")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
@@ -1606,7 +1464,8 @@ impl Encode for SampleSizeBox {
                 }
             }
         }
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 
@@ -1646,13 +1505,8 @@ pub struct SampleToChunkEntry {
 }
 
 impl Encode for SampleToChunkBox {
-    fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + 4 + self.entries.len() as u64 * (4 + 4 + 4)
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"stsc").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"stsc")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
@@ -1662,7 +1516,8 @@ impl Encode for SampleToChunkBox {
             entry.samples_per_chunk.encode(output)?;
             entry.sample_description_index.encode(output)?;
         }
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 
@@ -1694,13 +1549,8 @@ pub struct ChunkOffsetBox {
 }
 
 impl Encode for ChunkOffsetBox {
-    fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + 4 + self.entries.len() as u64 * 4
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"stco").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"stco")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
@@ -1708,7 +1558,8 @@ impl Encode for ChunkOffsetBox {
         for entry in &self.entries {
             entry.encode(output)?;
         }
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 
@@ -1736,13 +1587,8 @@ pub struct SyncSampleBox {
 }
 
 impl Encode for SyncSampleBox {
-    fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + 4 + self.entries.len() as u64 * 4
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"stss").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"stss")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
@@ -1750,7 +1596,8 @@ impl Encode for SyncSampleBox {
         for entry in &self.entries {
             entry.encode(output)?;
         }
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 
@@ -1778,18 +1625,14 @@ pub struct EditBox {
 }
 
 impl Encode for EditBox {
-    fn size(&self) -> u64 {
-        4 + 4 + self.edit_list.as_ref().map_or(0, Encode::size)
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"edts").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"edts")?;
 
         if let Some(edit_list) = &self.edit_list {
             edit_list.encode(output)?;
         }
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 
@@ -1823,13 +1666,8 @@ pub struct EditListEntry {
 }
 
 impl Encode for EditListBox {
-    fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + 4 + self.entries.len() as u64 * (4 + 4 + 4)
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"elst").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"elst")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
@@ -1839,7 +1677,8 @@ impl Encode for EditListBox {
             (entry.media_time as u32).encode(output)?;
             entry.media_rate.encode(output)?;
         }
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 
@@ -1891,13 +1730,8 @@ pub struct SampleToGroupEntry {
 }
 
 impl Encode for SampleToGroupBox {
-    fn size(&self) -> u64 {
-        4 + 4 + 1 + 3 + 4 + 4 + self.entries.len() as u64 * (4 + 4)
-    }
-
-    fn encode(&self, output: &mut impl Write) -> Result<()> {
-        (self.size() as u32).encode(output)?; // size
-        u32::from_be_bytes(*b"sbgp").encode(output)?; // type
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"sbgp")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
@@ -1907,7 +1741,8 @@ impl Encode for SampleToGroupBox {
             entry.sample_count.encode(output)?;
             entry.group_description_index.encode(output)?;
         }
-        Ok(())
+
+        update_box_header(output, begin)
     }
 }
 

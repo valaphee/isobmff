@@ -1,7 +1,8 @@
 #![feature(portable_simd)]
 
 use std::io::{Seek, SeekFrom, Write};
-use std::time::{Instant};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 use byteorder::{BigEndian, WriteBytesExt};
 use fixed_macro::types::{U16F16, U2F30, U8F8};
 use rav1e::prelude::*;
@@ -9,7 +10,7 @@ use windows::core::ComInterface;
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::Graphics::Direct3D11::{D3D11_CPU_ACCESS_READ, D3D11_SDK_VERSION, D3D11_USAGE_STAGING, D3D11CreateDevice, ID3D11Texture2D};
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, DXGI_MAP_READ, IDXGIFactory1, IDXGIOutput1, IDXGISurface1};
-use mp4::marshall::{ChunkOffsetBox, DataEntry, DataEntryUrlBox, DataInformationBox, DataReferenceBox, Decode, Encode, File, FileTypeBox, HandlerBox, Language, Matrix, MediaBox, MediaDataBox, MediaHeaderBox, MediaInformationBox, MediaInformationHeader, MovieBox, MovieHeaderBox, SampleDescriptionBox, SampleSizeBox, SampleTableBox, SampleToChunkBox, SampleToChunkEntry, TimeToSampleBox, TimeToSampleEntry, TrackBox, TrackHeaderBox, VideoMediaHeaderBox, VisualSampleEntry};
+use mp4::marshall::{ChunkOffsetBox, DataEntry, DataEntryUrlBox, DataInformationBox, DataReferenceBox, Decode, Encode, File, FileTypeBox, HandlerBox, Language, Matrix, MediaBox, MediaDataBox, MediaHeaderBox, MediaInformationBox, MediaInformationHeader, MovieBox, MovieHeaderBox, SampleDescriptionBox, SampleSizeBox, SampleTableBox, SampleToChunkBox, SampleToChunkEntry, SyncSampleBox, TimeToSampleBox, TimeToSampleEntry, TrackBox, TrackHeaderBox, VideoMediaHeaderBox, VisualSampleEntry};
 
 struct Mp4Writer<W> {
     writer: W,
@@ -25,6 +26,7 @@ struct Mp4Writer<W> {
     time_to_sample: Vec<TimeToSampleEntry>,
     sample_to_chunk: Vec<SampleToChunkEntry>,
     chunk_offsets: Vec<u32>,
+    sync_samples: Vec<u32>,
     duration: u32,
 }
 
@@ -57,11 +59,12 @@ impl<W: Write + Seek> Mp4Writer<W> {
             time_to_sample: vec![],
             sample_to_chunk: vec![],
             chunk_offsets: vec![],
+            sync_samples: vec![],
             duration: 0,
         }
     }
 
-    fn write_sample(&mut self, data: &[u8], duration: u32) {
+    fn write_sample(&mut self, data: &[u8], duration: u32, sync: bool) {
         self.chunk_buffer.extend_from_slice(&data);
         self.chunk_samples += 1;
         self.chunk_duration += duration;
@@ -82,6 +85,10 @@ impl<W: Write + Seek> Mp4Writer<W> {
         if self.chunk_duration >= 1000 {
            self.write_chunk();
         }
+        if sync {
+            self.sync_samples.push(self.sample_id);
+        }
+        self.sample_id += 1;
         self.duration += duration
     }
 
@@ -112,6 +119,7 @@ impl<W: Write + Seek> Mp4Writer<W> {
     fn write_footer(mut self) -> W {
         self.write_chunk();
 
+        println!("{:?}", self.sync_samples);
         let media_data_end = self.writer.stream_position().unwrap();
         let media_data_size = media_data_end - self.media_data_start;
         self.writer.seek(SeekFrom::Start(self.media_data_start)).unwrap();
@@ -158,8 +166,8 @@ impl<W: Write + Seek> Mp4Writer<W> {
                         y: U16F16!(0),
                         w: U2F30!(1),
                     },
-                    width: U16F16!(2560),
-                    height: U16F16!(1440),
+                    width: U16F16!(1920),
+                    height: U16F16!(1080),
                 },
                 edit: None,
                 media: MediaBox {
@@ -188,8 +196,8 @@ impl<W: Write + Seek> Mp4Writer<W> {
                         sample_table: SampleTableBox {
                             description: SampleDescriptionBox { visual: Some(VisualSampleEntry {
                                 data_reference_index: 1,
-                                width: 2560,
-                                height: 1440,
+                                width: 1920,
+                                height: 1080,
                                 horizresolution: U16F16!(72),
                                 vertresolution: U16F16!(72),
                                 frame_count: 1,
@@ -235,7 +243,7 @@ impl<W: Write + Seek> Mp4Writer<W> {
                             sample_to_chunk: SampleToChunkBox { entries: self.sample_to_chunk },
                             sample_size: SampleSizeBox::PerSample(self.sample_sizes),
                             chunk_offset: ChunkOffsetBox { entries: self.chunk_offsets },
-                            sync_sample: None,
+                            sync_sample: Some(SyncSampleBox { entries: self.sync_samples }),
                             sample_to_group: None,
                         },
                     },
@@ -248,9 +256,9 @@ impl<W: Write + Seek> Mp4Writer<W> {
 
 fn main() {
     let encoder_config = EncoderConfig {
-        width: 2560,
-        height: 1440,
-        tiles: 64,
+        width: 1920,
+        height: 1080,
+        tiles: 16,
         speed_settings: SpeedSettings::from_preset(10),
         ..Default::default()
     };
@@ -309,7 +317,7 @@ fn main() {
             let mut frame = frame_sender.new_frame();
             let mut mapped_rect = Default::default();
             for _ in 0..60 * 8 {
-                let a = Instant::now();
+                let begin = Instant::now();
                 let resource = loop {
                     let mut frame_info = Default::default();
                     let mut resource = Default::default();
@@ -320,68 +328,57 @@ fn main() {
                     }
                     output_duplication.ReleaseFrame().unwrap();
                 };
-                println!("Took a {:?}", a.elapsed());
-                let b = Instant::now();
                 let texture = resource.cast::<ID3D11Texture2D>().unwrap();
                 device_context.CopyResource(&copy_texture, &texture);
                 output_duplication.ReleaseFrame().unwrap();
-                println!("Took b {:?}", b.elapsed());
 
-                let c = Instant::now();
                 copy_surface.Map(&mut mapped_rect, DXGI_MAP_READ).unwrap();
-                let pixels = std::slice::from_raw_parts_mut(mapped_rect.pBits, (copy_texture_desc.Width * copy_texture_desc.Height * 4) as usize);
-                /*for p in pixels.chunks_exact_mut(4) {
-                    let (y, cb, cr) = rgb_to_ycbcr((p[2], p[1], p[0]));
-                    p[0] = y;
-                    p[1] = cb;
-                    p[2] = cr;
-                }*/
-                let mstride = mapped_rect.Pitch as usize;
-                println!("Took c {:?}", c.elapsed());
+                let bgra = std::slice::from_raw_parts_mut(mapped_rect.pBits, (copy_texture_desc.Width * copy_texture_desc.Height * 4) as usize);
+                let bgra_stride = mapped_rect.Pitch as usize;
+                for (plane_idx, plane) in frame.planes.iter_mut().enumerate() {
+                    let height = plane.cfg.height;
+                    let width = plane.cfg.width;
+                    let stride = plane.cfg.stride;
+                    let x_decimator = plane.cfg.xdec + 1;
+                    let y_decimator = plane.cfg.ydec + 1;
 
-                for (i, p) in frame.planes.iter_mut().enumerate() {
-                    let height = p.cfg.height;
-                    let width = p.cfg.width;
-                    let stride = p.cfg.stride;
-                    let xdec = p.cfg.xdec;
-                    let ydec = p.cfg.ydec;
-
-                    let data = p.data_origin_mut();
+                    let data = plane.data_origin_mut();
                     for y in 0..height {
+                        let bgra_row = &mut bgra[y * y_decimator * bgra_stride..];
                         let data_row = &mut data[y * stride..];
                         for x in 0..width {
-                            data_row[x] = pixels[y * (ydec + 1) * mstride + x * (xdec + 1) * 4 + i];
+                            data_row[x] = bgra_row[x * x_decimator * 4 + plane_idx];
                         }
                     }
                 }
-                println!("Took c {:?}", c.elapsed());
-
-                let d = Instant::now();
                 copy_surface.Unmap().unwrap();
-                println!("Acquired frame");
+
                 frame_sender.send(frame.clone()).unwrap();
-                println!("Took d {:?}", d.elapsed());
+
+                let elapsed = begin.elapsed();
+                if elapsed >= Duration::from_millis(1000 / 60) {
+                    println!("Frame took too long! ({:?})", elapsed);
+                } else {
+                    sleep(Duration::from_millis(1000 / 60) - elapsed);
+                }
             }
         }
     });
 
-    println!("{:#?}", packet_receiver.container_sequence_header());
-
     let mut writer = Mp4Writer::write_header(std::fs::File::create("test.mp4").unwrap());
-    let mut i = 0;
     loop {
         match packet_receiver.recv() {
-            Ok(pkt) => {
-                println!("Packet {} {} {}", pkt.input_frameno, pkt.qp, pkt.frame_type);
-                writer.write_sample(&pkt.data, 32);
-                i += 1;
-            }
-            Err(e) => {
-                println!("Limit reached");
-                break;
-            },
+            Ok(packet) => writer.write_sample(&packet.data, 32, packet.frame_type == FrameType::KEY),
+            Err(_) => break,
         }
     }
     writer.write_footer();
-    println!("Finished");
+}
+
+fn test(hello: [u8; 4]) -> u32 {
+    u32::from_be_bytes(hello)
+}
+
+fn world() {
+    test(*b"HELL");
 }
