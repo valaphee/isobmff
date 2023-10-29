@@ -6,13 +6,13 @@ use crate::marshal::{
 };
 
 #[derive(Debug)]
-pub struct AV1SampleEntry {
+pub struct AVCSampleEntry {
     pub base: VisualSampleEntry,
 }
 
-impl Encode for AV1SampleEntry {
+impl Encode for AVCSampleEntry {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
-        let begin = encode_box_header(output, *b"av01")?;
+        let begin = encode_box_header(output, *b"avc1")?;
 
         self.base.encode(output)?;
 
@@ -20,7 +20,7 @@ impl Encode for AV1SampleEntry {
     }
 }
 
-impl Decode for AV1SampleEntry {
+impl Decode for AVCSampleEntry {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         Ok(Self {
             base: Decode::decode(input)?,

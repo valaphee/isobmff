@@ -5,10 +5,14 @@ use std::{
 
 use bstringify::bstringify;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use derivative::Derivative;
 use fixed::types::{U16F16, U8F8};
 use fixed_macro::types::{U16F16, U8F8};
 
-use crate::marshal::{av1::AV1SampleEntry, Decode, Encode, Error, FourCC, Matrix, Result};
+use crate::marshal::{
+    aac::AACSampleEntry, av1::AV1SampleEntry, avc::AVCSampleEntry, Decode, Encode, Error, FourCC,
+    Matrix, Result,
+};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // ISO/IEC 14496-12:2008
@@ -181,8 +185,9 @@ impl Decode for FileTypeBox {
 // ISO/IEC 14496-12:2008 8.1.1
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug)]
-pub struct MediaDataBox(pub Vec<u8>);
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub struct MediaDataBox(#[derivative(Debug = "ignore")] pub Vec<u8>);
 
 impl Encode for MediaDataBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
@@ -883,6 +888,8 @@ impl Decode for SampleTableBox {
 #[derive(Debug)]
 pub enum SampleDescriptionBox {
     AV1(AV1SampleEntry),
+    AVC(AVCSampleEntry),
+    AAC(AACSampleEntry),
 }
 
 #[derive(Debug)]
@@ -1035,13 +1042,15 @@ impl Decode for SampleDescriptionBox {
 
         let mut entry = None;
 
-        assert_eq!(u32::decode(input)?, 0); // entry_count
+        assert_eq!(u32::decode(input)?, 1); // entry_count
         let size = u32::decode(input)?;
         let r#type: [u8; 4] = u32::decode(input)?.to_be_bytes();
 
         let (mut data, remaining_data) = input.split_at((size - 4 - 4) as usize);
         match &r#type {
             b"av01" => entry = Some(SampleDescriptionBox::AV1(Decode::decode(&mut data)?)),
+            b"avc1" => entry = Some(SampleDescriptionBox::AVC(Decode::decode(&mut data)?)),
+            b"mp4a" => entry = Some(SampleDescriptionBox::AAC(Decode::decode(&mut data)?)),
             _ => {}
         }
         *input = remaining_data;
@@ -1100,8 +1109,9 @@ impl Decode for TimeToSampleBox {
 // ISO/IEC 14496-12:2008 8.6.2
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug)]
-pub struct SyncSampleBox(pub Vec<u32>);
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub struct SyncSampleBox(#[derivative(Debug = "ignore")] pub Vec<u32>);
 
 impl Encode for SyncSampleBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
@@ -1309,7 +1319,7 @@ impl Decode for DataEntryUrlBox {
         assert_eq!(input.read_u8()?, 0); // version
         let flags = input.read_u24::<BigEndian>()?; // flags
 
-        Ok(Self(if flags & 1 << 0 != 0 {
+        Ok(Self(if flags & 1 << 0 == 0 {
             Some(Decode::decode(input)?)
         } else {
             None
@@ -1387,10 +1397,11 @@ impl Decode for DataReferenceBox {
 // ISO/IEC 14496-12:2008 8.7.3
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug)]
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub enum SampleSizeBox {
     Value { sample_size: u32, sample_count: u32 },
-    PerSample(Vec<u32>),
+    PerSample(#[derivative(Debug = "ignore")] Vec<u32>),
 }
 
 impl Encode for SampleSizeBox {
@@ -1446,8 +1457,9 @@ impl Decode for SampleSizeBox {
 // ISO/IEC 14496-12:2008 8.7.4
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug)]
-pub struct SampleToChunkBox(pub Vec<SampleToChunkEntry>);
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub struct SampleToChunkBox(#[derivative(Debug = "ignore")] pub Vec<SampleToChunkEntry>);
 
 #[derive(Debug)]
 pub struct SampleToChunkEntry {
@@ -1495,8 +1507,9 @@ impl Decode for SampleToChunkBox {
 // ISO/IEC 14496-12:2008 8.7.5
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug)]
-pub struct ChunkOffsetBox(pub Vec<u32>);
+#[derive(Derivative)]
+#[derivative(Debug)]
+pub struct ChunkOffsetBox(#[derivative(Debug = "ignore")] pub Vec<u32>);
 
 impl Encode for ChunkOffsetBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
@@ -1546,7 +1559,7 @@ impl Encode for SampleToGroupBox {
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
-        self.0.0.encode(output)?;
+        self.0 .0.encode(output)?;
         (self.1.len() as u32).encode(output)?;
         for entry in &self.1 {
             entry.sample_count.encode(output)?;
