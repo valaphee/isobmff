@@ -18,14 +18,14 @@ use crate::marshal::{
 // ISO/IEC 14496-12:2008
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-pub fn encode_box_header(output: &mut (impl Write + Seek), r#type: [u8; 4]) -> Result<u64> {
+pub(crate) fn encode_box_header(output: &mut (impl Write + Seek), r#type: [u8; 4]) -> Result<u64> {
     let begin = output.stream_position()?;
     0u32.encode(output)?; // size
     output.write_all(&r#type)?;
     Ok(begin)
 }
 
-pub fn update_box_header(output: &mut (impl Write + Seek), begin: u64) -> Result<()> {
+pub(crate) fn update_box_header(output: &mut (impl Write + Seek), begin: u64) -> Result<()> {
     let end = output.stream_position()?;
     let size = end - begin;
     output.seek(SeekFrom::Start(begin))?;

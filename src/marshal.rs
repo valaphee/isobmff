@@ -12,7 +12,7 @@ use thiserror::Error;
 pub mod aac;
 pub mod av1;
 pub mod avc;
-pub mod base;
+pub mod mp4;
 
 #[derive(Error, Debug)]
 pub enum Error {
