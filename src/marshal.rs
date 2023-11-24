@@ -118,6 +118,15 @@ impl Decode for u64 {
     }
 }
 
+impl<T: Encode> Encode for Option<T> {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        if let Some(value) = self {
+            value.encode(output)?;
+        }
+        Ok(())
+    }
+}
+
 impl Encode for String {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         output.write_all(self.as_bytes())?;
@@ -300,39 +309,42 @@ macro_rules! unwrap_box {
 #[derive(Debug)]
 pub struct File {
     pub file_type: FileTypeBox,
+    pub movie: Option<MovieBox>,
     pub media_data: Vec<MediaDataBox>,
-    pub movie: MovieBox,
+    pub meta: Option<MetaBox>,
 }
 
 impl Encode for File {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         self.file_type.encode(output)?;
-        8u32.encode(output)?; // size
-        u32::from_be_bytes(*b"free").encode(output)?; // type
+        self.movie.encode(output)?;
         for media_data in &self.media_data {
             media_data.encode(output)?;
         }
-        self.movie.encode(output)
+        self.meta.encode(output)
     }
 }
 
 impl Decode for File {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let mut file_type = None;
-        let mut media_data = vec![];
         let mut movie = None;
+        let mut media_data = Vec::new();
+        let mut meta = None;
 
         decode_boxes! {
             input,
             required ftyp file_type,
+            optional moov movie,
             multiple mdat media_data,
-            required moov movie,
+            optional meta meta,
         }
 
         Ok(Self {
             file_type,
             media_data,
             movie,
+            meta,
         })
     }
 }
@@ -431,7 +443,7 @@ impl Encode for MovieBox {
 impl Decode for MovieBox {
     fn decode(input: &mut &[u8]) -> Result<Self> {
         let mut header = None;
-        let mut tracks = vec![];
+        let mut tracks = Vec::new();
 
         decode_boxes! {
             input,
@@ -569,9 +581,7 @@ impl Encode for TrackBox {
 
         self.header.encode(output)?;
         self.media.encode(output)?;
-        if let Some(edit) = &self.edit {
-            edit.encode(output)?;
-        }
+        self.edit.encode(output)?;
 
         update_box_header(output, begin)
     }
@@ -968,13 +978,15 @@ impl Decode for VideoMediaHeaderBox {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
 
+        let graphicsmode = Decode::decode(input)?;
+        let opcolor = [
+            Decode::decode(input)?,
+            Decode::decode(input)?,
+            Decode::decode(input)?,
+        ];
         Ok(Self {
-            graphicsmode: Decode::decode(input)?,
-            opcolor: [
-                Decode::decode(input)?,
-                Decode::decode(input)?,
-                Decode::decode(input)?,
-            ],
+            graphicsmode,
+            opcolor,
         })
     }
 }
@@ -1033,15 +1045,11 @@ impl Encode for SampleTableBox {
 
         self.description.encode(output)?;
         self.time_to_sample.encode(output)?;
-        if let Some(sync_sample) = &self.sync_sample {
-            sync_sample.encode(output)?;
-        }
+        self.sync_sample.encode(output)?;
         self.sample_size.encode(output)?;
         self.sample_to_chunk.encode(output)?;
         self.chunk_offset.encode(output)?;
-        if let Some(sample_to_group) = &self.sample_to_group {
-            sample_to_group.encode(output)?;
-        }
+        self.sample_to_group.encode(output)?;
 
         update_box_header(output, begin)
     }
@@ -1295,9 +1303,11 @@ impl Decode for TimeToSampleBox {
         let entry_count = u32::decode(input)?;
         let mut entries = Vec::default();
         for _ in 0..entry_count {
+            let sample_count = Decode::decode(input)?;
+            let sample_delta = Decode::decode(input)?;
             entries.push(TimeToSampleEntry {
-                sample_count: Decode::decode(input)?,
-                sample_delta: Decode::decode(input)?,
+                sample_count,
+                sample_delta,
             });
         }
         Ok(Self(entries))
@@ -1333,9 +1343,10 @@ impl Decode for SyncSampleBox {
         input.read_u24::<BigEndian>()?; // flags
 
         let entry_count = u32::decode(input)?;
-        let mut entries = vec![];
+        let mut entries = Vec::new();
         for _ in 0..entry_count {
-            entries.push(Decode::decode(input)?)
+            let sample_number = Decode::decode(input)?;
+            entries.push(sample_number);
         }
         Ok(Self(entries))
     }
@@ -1354,9 +1365,7 @@ impl Encode for EditBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         let begin = encode_box_header(output, *b"edts")?;
 
-        if let Some(edit_list) = &self.edit_list {
-            edit_list.encode(output)?;
-        }
+        self.edit_list.encode(output)?;
 
         update_box_header(output, begin)
     }
@@ -1412,7 +1421,7 @@ impl Decode for EditListBox {
         input.read_u24::<BigEndian>()?; // flags
 
         let entry_count = u32::decode(input)?;
-        let mut entries = vec![];
+        let mut entries = Vec::new();
         for _ in 0..entry_count {
             let segment_duration;
             let media_time;
@@ -1427,11 +1436,12 @@ impl Decode for EditListBox {
                 }
                 _ => panic!(),
             }
+            let media_rate = Decode::decode(input)?;
             entries.push(EditListEntry {
                 segment_duration,
                 media_time,
-                media_rate: Decode::decode(input)?,
-            })
+                media_rate,
+            });
         }
         Ok(Self(entries))
     }
@@ -1449,7 +1459,7 @@ pub struct DataInformationBox {
 impl Default for DataInformationBox {
     fn default() -> Self {
         Self {
-            reference: DataReferenceBox(vec![DataEntry::Url(DataEntryUrlBox(None))]),
+            reference: DataReferenceBox(vec![DataEntry::Url(DataEntryUrlBox { location: None })]),
         }
     }
 }
@@ -1497,17 +1507,17 @@ pub enum DataEntry {
 }
 
 #[derive(Debug, Default)]
-pub struct DataEntryUrlBox(pub Option<String>);
+pub struct DataEntryUrlBox {
+    pub location: Option<String>,
+}
 
 impl Encode for DataEntryUrlBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         let begin = encode_box_header(output, *b"url ")?;
         output.write_u8(0)?; // version
-        output.write_u24::<BigEndian>(if self.0.is_none() { 1 << 0 } else { 0 })?; // flags
+        output.write_u24::<BigEndian>(if self.location.is_none() { 1 << 0 } else { 0 })?; // flags
 
-        if let Some(location) = &self.0 {
-            location.encode(output)?;
-        }
+        self.location.encode(output)?;
 
         update_box_header(output, begin)
     }
@@ -1518,16 +1528,20 @@ impl Decode for DataEntryUrlBox {
         assert_eq!(input.read_u8()?, 0); // version
         let flags = input.read_u24::<BigEndian>()?; // flags
 
-        Ok(Self(if flags & 1 << 0 == 0 {
+        let location = if flags & 1 << 0 == 0 {
             Some(Decode::decode(input)?)
         } else {
             None
-        }))
+        };
+        Ok(Self { location })
     }
 }
 
 #[derive(Debug)]
-pub struct DataEntryUrnBox(pub String, pub String);
+pub struct DataEntryUrnBox {
+    pub name: String,
+    pub location: String,
+}
 
 impl Encode for DataEntryUrnBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
@@ -1535,8 +1549,8 @@ impl Encode for DataEntryUrnBox {
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
 
-        self.0.encode(output)?;
-        self.1.encode(output)?;
+        self.name.encode(output)?;
+        self.location.encode(output)?;
 
         update_box_header(output, begin)
     }
@@ -1547,7 +1561,9 @@ impl Decode for DataEntryUrnBox {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
 
-        Ok(Self(Decode::decode(input)?, Decode::decode(input)?))
+        let name = Decode::decode(input)?;
+        let location = Decode::decode(input)?;
+        Ok(Self { name, location })
     }
 }
 
@@ -1582,8 +1598,12 @@ impl Decode for DataReferenceBox {
 
             let (mut data, remaining_data) = input.split_at((size - 4 - 4) as usize);
             match &r#type {
-                b"url " => entries.push(DataEntry::Url(Decode::decode(&mut data)?)),
-                b"urn " => entries.push(DataEntry::Urn(Decode::decode(&mut data)?)),
+                b"url " => {
+                    entries.push(DataEntry::Url(Decode::decode(&mut data)?));
+                }
+                b"urn " => {
+                    entries.push(DataEntry::Urn(Decode::decode(&mut data)?));
+                }
                 _ => {}
             }
             *input = remaining_data;
@@ -1643,10 +1663,10 @@ impl Decode for SampleSizeBox {
                 sample_count,
             });
         }
-
         let mut samples = Vec::default();
         for _ in 0..sample_count {
-            samples.push(Decode::decode(input)?)
+            let entry_size = Decode::decode(input)?;
+            samples.push(entry_size);
         }
         Ok(SampleSizeBox::PerSample(samples))
     }
@@ -1692,11 +1712,14 @@ impl Decode for SampleToChunkBox {
         let entry_count = u32::decode(input)?;
         let mut entries = Vec::default();
         for _ in 0..entry_count {
+            let first_chunk = Decode::decode(input)?;
+            let samples_per_chunk = Decode::decode(input)?;
+            let sample_description_index = Decode::decode(input)?;
             entries.push(SampleToChunkEntry {
-                first_chunk: Decode::decode(input)?,
-                samples_per_chunk: Decode::decode(input)?,
-                sample_description_index: Decode::decode(input)?,
-            })
+                first_chunk,
+                samples_per_chunk,
+                sample_description_index,
+            });
         }
         Ok(Self(entries))
     }
@@ -1733,7 +1756,8 @@ impl Decode for ChunkOffsetBox {
         let entry_count = u32::decode(input)?;
         let mut entries = Vec::default();
         for _ in 0..entry_count {
-            entries.push(Decode::decode(input)?)
+            let chunk_offset = Decode::decode(input)?;
+            entries.push(chunk_offset);
         }
         Ok(Self(entries))
     }
@@ -1776,12 +1800,14 @@ impl Decode for SampleToGroupBox {
 
         let grouping_type = FourCC(Decode::decode(input)?);
         let entry_count = u32::decode(input)?;
-        let mut entries = vec![];
+        let mut entries = Vec::new();
         for _ in 0..entry_count {
+            let sample_count = Decode::decode(input)?;
+            let group_description_index = Decode::decode(input)?;
             entries.push(SampleToGroupEntry {
-                sample_count: Decode::decode(input)?,
-                group_description_index: Decode::decode(input)?,
-            })
+                sample_count,
+                group_description_index,
+            });
         }
         Ok(Self(grouping_type, entries))
     }
@@ -1792,13 +1818,19 @@ impl Decode for SampleToGroupBox {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct MetaBox {}
+pub struct MetaBox {
+    pub handler: HandlerBox,
+    pub item_location: Option<ItemLocationBox>,
+}
 
 impl Encode for MetaBox {
     fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
         let begin = encode_box_header(output, *b"meta")?;
         output.write_u8(0)?; // version
         output.write_u24::<BigEndian>(0)?; // flags
+
+        self.handler.encode(output)?;
+        self.item_location.encode(output)?;
 
         update_box_header(output, begin)
     }
@@ -1809,10 +1841,98 @@ impl Decode for MetaBox {
         assert_eq!(input.read_u8()?, 0); // version
         input.read_u24::<BigEndian>()?; // flags
 
+        let mut handler = None;
+        let mut item_location = None;
+
         decode_boxes! {
             input,
+            required hdlr handler,
+            optional iloc item_location,
         }
 
-        Ok(Self {})
+        Ok(Self {
+            handler,
+            item_location,
+        })
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// ISO/IEC 14496-12:2008 8.11.3
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug)]
+pub struct ItemLocationBox(Vec<ItemLocationEntry>);
+
+#[derive(Debug)]
+pub struct ItemLocationEntry {
+    pub item_id: u16,
+    pub data_reference_index: u16,
+    pub base_offset: u64,
+    pub extents: Vec<ItemLocationEntryExtent>,
+}
+
+#[derive(Debug)]
+pub struct ItemLocationEntryExtent {
+    pub extent_offset: u64,
+    pub extent_length: u64,
+}
+
+impl Encode for ItemLocationBox {
+    fn encode(&self, output: &mut (impl Write + Seek)) -> Result<()> {
+        let begin = encode_box_header(output, *b"iloc")?;
+        output.write_u8(0)?; // version
+        output.write_u24::<BigEndian>(0)?; // flags
+
+        update_box_header(output, begin)
+    }
+}
+
+impl Decode for ItemLocationBox {
+    fn decode(input: &mut &[u8]) -> Result<Self> {
+        assert_eq!(input.read_u8()?, 0); // version
+        input.read_u24::<BigEndian>()?; // flags
+
+        let offset_and_length_size = input.read_u8()?;
+        let base_offset_size = input.read_u8()?;
+        let item_count = u16::decode(input)?;
+        let mut items = Vec::new();
+        for _ in 0..item_count {
+            let item_id = Decode::decode(input)?;
+            let data_reference_index = Decode::decode(input)?;
+            let base_offset = match base_offset_size & 0xF {
+                0 => 0,
+                4 => input.read_u32::<BigEndian>()? as u64,
+                8 => input.read_u64::<BigEndian>()?,
+                _ => todo!(),
+            };
+            let extent_count = u16::decode(input)?;
+            let mut extents = Vec::new();
+            for _ in 0..extent_count {
+                let extent_offset = match offset_and_length_size & 0xF {
+                    0 => 0,
+                    4 => input.read_u32::<BigEndian>()? as u64,
+                    8 => input.read_u64::<BigEndian>()?,
+                    _ => todo!(),
+                };
+                let extent_length = match offset_and_length_size >> 4 & 0xF {
+                    0 => 0,
+                    4 => input.read_u32::<BigEndian>()? as u64,
+                    8 => input.read_u64::<BigEndian>()?,
+                    _ => todo!(),
+                };
+                extents.push(ItemLocationEntryExtent {
+                    extent_offset,
+                    extent_length,
+                });
+            }
+            items.push(ItemLocationEntry {
+                item_id,
+                data_reference_index,
+                base_offset,
+                extents,
+            })
+        }
+        Ok(Self(items))
     }
 }
