@@ -3,15 +3,11 @@ use std::io::{Seek, Write};
 use fixed_macro::types::U16F16;
 
 use crate::marshal::{
-    av1::AV1SampleEntry,
-    mp4::{
-        encode_box_header, update_box_header, ChunkOffsetBox, FileTypeBox, HandlerBox, MediaBox,
-        MediaHeaderBox, MediaInformationBox, MediaInformationHeader, MovieBox, MovieHeaderBox,
-        SampleDescriptionBox, SampleSizeBox, SampleTableBox, SampleToChunkBox, SampleToChunkEntry,
-        SyncSampleBox, TimeToSampleBox, TimeToSampleEntry, TrackBox, TrackHeaderBox,
-        VisualSampleEntry,
-    },
-    Encode,
+    av1::AV1SampleEntry, encode_box_header, update_box_header, ChunkOffsetBox, Encode, FileTypeBox,
+    HandlerBox, MediaBox, MediaHeaderBox, MediaInformationBox, MediaInformationHeader, MovieBox,
+    MovieHeaderBox, SampleDescriptionBox, SampleSizeBox, SampleTableBox, SampleToChunkBox,
+    SampleToChunkEntry, SyncSampleBox, TimeToSampleBox, TimeToSampleEntry, TrackBox,
+    TrackHeaderBox, VisualSampleEntry,
 };
 
 pub struct Writer<W> {

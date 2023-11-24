@@ -1,8 +1,7 @@
 use std::io::{Seek, Write};
 
 use crate::marshal::{
-    mp4::{encode_box_header, update_box_header, AudioSampleEntry},
-    Decode, Encode, Result,
+    encode_box_header, update_box_header, AudioSampleEntry, Decode, Encode, Result,
 };
 
 #[derive(Debug)]
