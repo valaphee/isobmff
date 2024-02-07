@@ -241,9 +241,7 @@ pub(crate) fn update_box_header(output: &mut (impl Write + Seek), begin: u64) ->
 
 macro_rules! decode_boxes {(
     $input:ident,
-    $(
-        $quantifier:ident $type:ident $name:ident
-    ),* $(,)?
+    $($quantifier:ident $type:ident $name:ident),* $(,)?
 ) => (
      while !$input.is_empty() {
         let size = u32::decode($input)?;
@@ -251,12 +249,8 @@ macro_rules! decode_boxes {(
 
         let (mut data, remaining_data) = $input.split_at((size - 4 - 4) as usize);
         match &r#type {
-            $(
-                bstringify!($type) => decode_box!(data $quantifier $type $name),
-            )*
-                _ => {
-                println!("{}", std::str::from_utf8(&r#type).unwrap());
-            }
+            $(bstringify!($type) => decode_box!(data $quantifier $type $name),)*
+            _ => {}
         }
         *$input = remaining_data;
     }
